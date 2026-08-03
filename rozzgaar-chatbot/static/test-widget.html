@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Rozzgaar Dashboard - Widget Extraction Test</title>
+<style>
+  /* ---- Minimal styling so the dashboard markup below doesn't look
+     completely broken (the real site's stylesheet isn't included here -
+     this file is only for testing what extractPageContent() captures,
+     not for testing visual appearance). ---- */
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; color: #1F2937; }
+  .dash-layout { display: flex; min-height: 100vh; }
+  .dash-sidebar { width: 220px; background: #1F2937; color: #fff; padding: 16px; flex-shrink: 0; }
+  .dash-sidebar a { color: #D1D5DB; text-decoration: none; display: block; padding: 8px 0; }
+  .dash-main { flex: 1; }
+  .dash-topbar { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; border-bottom: 1px solid #E5E7EB; }
+  .dash-content { padding: 24px; }
+  .dash-stats-grid { display: flex; gap: 16px; margin-bottom: 24px; }
+  .dash-stat { background: #F9FAFB; border: 1px solid #E5E7EB; border-radius: 10px; padding: 16px; display: flex; gap: 10px; align-items: center; }
+  .dash-section-hd { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; font-weight: 700; }
+  .enrolled-grid { display: flex; gap: 16px; }
+  .enrolled-card { border: 1px solid #E5E7EB; border-radius: 10px; padding: 12px; width: 260px; cursor: pointer; }
+  .btn { display: inline-block; padding: 6px 12px; border-radius: 8px; background: #E8734A; color: #fff; text-decoration: none; font-size: 13px; }
+
+  /* ---- Debug panel for the widget extraction test ---- */
+  #extractDebugBtn {
+    position: fixed; bottom: 16px; left: 16px; z-index: 9998;
+    background: #1F2937; color: #fff; border: none; border-radius: 8px;
+    padding: 10px 16px; font-size: 13px; cursor: pointer;
+  }
+  #extractDebugPanel {
+    display: none; position: fixed; bottom: 64px; left: 16px; z-index: 9998;
+    width: 420px; max-height: 60vh; overflow: auto;
+    background: #111827; color: #D1FAE5; font: 12px/1.5 monospace;
+    padding: 14px; border-radius: 10px; white-space: pre-wrap;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.35);
+  }
+</style>
+</head>
+<body>
+
+<!-- =====================================================================
+     FROZEN SNAPSHOT of the real Rozzgaar dashboard markup for testing
+     extractPageContent() only. The original page's auth-redirect script,
+     live API calls (session check, enrollments fetch, photo-gate check),
+     and Google Translate widget were removed/stubbed here on purpose -
+     they'd otherwise redirect you to /login or hit rozzgaar.in's real
+     API from a file that isn't actually running on that domain.
+     ===================================================================== -->
+
+<div class="dash-layout">
+<aside class="dash-sidebar" id="dashSidebar">
+  <div class="dash-sidebar-logo"><strong>Rozzgaar</strong></div>
+  <nav class="dash-nav">
+    <div class="dash-nav-section">Main</div>
+    <a href="/applicant/" class="dash-nav-item active">🏠 Dashboard</a>
+    <a href="/applicant/browse-courses" class="dash-nav-item">📚 Browse Courses</a>
+    <a href="/applicant/certifications" class="dash-nav-item">🎓 My Certifications</a>
+    <div class="dash-nav-section">Account</div>
+    <a href="/applicant/profile" class="dash-nav-item">👤 My Profile</a>
+    <a href="/applicant/transactions" class="dash-nav-item">💳 Transactions</a>
+    <a href="/applicant/reviews" class="dash-nav-item">⭐ My Reviews</a>
+  </nav>
+</aside>
+<div class="dash-main" id="dashMain">
+  <header class="dash-topbar">
+    <div class="dash-page-title" id="pageTitle">My Dashboard</div>
+    <div class="dash-topbar-right">
+      <span class="dash-user-name" id="dName">Durgesh</span>
+    </div>
+  </header>
+  <div class="dash-content">
+
+    <div class="dash-stats-grid" id="statsGrid">
+      <div class="dash-stat dash-stat-blue">
+        <div class="dash-stat-icon">📚</div>
+        <div><div class="dash-stat-num" id="sEnrolled">1</div><div class="dash-stat-label">Enrolled Courses</div></div>
+      </div>
+      <div class="dash-stat dash-stat-green">
+        <div class="dash-stat-icon">✅</div>
+        <div><div class="dash-stat-num">0</div><div class="dash-stat-label">Completed</div></div>
+      </div>
+      <div class="dash-stat dash-stat-amber">
+        <div class="dash-stat-icon">🏆</div>
+        <div><div class="dash-stat-num">0</div><div class="dash-stat-label">Certificates</div></div>
+      </div>
+    </div>
+
+    <div class="dash-section-hd">
+      My Enrolled Courses
+      <a href="/applicant/browse-courses" class="btn btn-primary btn-sm">+ Enroll New Course</a>
+    </div>
+
+    <div class="enrolled-grid" id="enrolledGrid">
+      <div class="enrolled-card" onclick="location.href='/applicant/course-content?slug=edp'">
+        <div class="enrolled-body">
+          <div class="enrolled-title">EDP – Entrepreneur Development Program</div>
+          <div class="enrolled-meta">Lorem ipsum dolor sit amet consectetur adipisicing elit. Inventore qui optio est, fuga neque laudantium voluptates perferendis id repudiandae exercitationem veritatis enim, dicta officia nisi sit sunt sapiente! Nulla, culpa!</div>
+          <div class="enrolled-footer">
+            <div class="enrolled-badge">✓ Enrolled</div>
+            <a href="/applicant/course-content?slug=edp" class="btn btn-primary btn-sm enrolled-explore-btn" onclick="event.stopPropagation()">Explore →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="enrolled-grid" id="enrolledGrid">
+      <div class="enrolled-card" onclick="location.href='/applicant/course-content?slug=edp'">
+        <div class="enrolled-body">
+          <div class="enrolled-title">EDP – Entrepreneur Development Program</div>
+          <div class="enrolled-meta">15 Lectures · 30 Hours · English/Hindi</div>
+          <div class="enrolled-footer">
+            <div class="enrolled-badge">✓ Enrolled</div>
+            <a href="/applicant/course-content?slug=edp" class="btn btn-primary btn-sm enrolled-explore-btn" onclick="event.stopPropagation()">Explore →</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /dash-content -->
+</div><!-- /dash-main -->
+</div><!-- /dash-layout -->
+
+<!-- ============================ WIDGET ============================ -->
+<div id="widget" style="position:fixed; bottom:16px; right:16px; width:360px; max-width:calc(100vw - 32px); z-index:9999;
+     background:#ECE5DD; border-radius:16px; overflow:hidden; box-shadow:0 12px 32px rgba(0,0,0,0.25); border:1px solid rgba(0,0,0,0.06); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div id="header" style="background:#E8734A; color:#fff; padding:12px 14px; display:flex; align-items:center; gap:10px;">
+    <div style="width:30px;height:30px;border-radius:50%;background:rgba(255,255,255,.25);display:flex;align-items:center;justify-content:center;font-weight:600;">R</div>
+    <div><div style="font-weight:600;font-size:14px;">Rozzgaar Assistant</div><div style="font-size:11px;opacity:.85;">Online</div></div>
+  </div>
+  <div id="log" style="height:320px; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:4px; background:#ECE5DD;"></div>
+  <form id="inputBar" style="display:flex; gap:8px; padding:10px 12px; background:#fff; border-top:1px solid rgba(0,0,0,.06);">
+    <input type="text" id="input" placeholder="Ask about this page..." autocomplete="off"
+           style="flex:1; padding:9px 12px; border-radius:18px; border:1px solid #E5E7EB; background:#F7F7F8; font-size:13.5px; outline:none;">
+    <button type="submit" style="background:#E8734A; color:#fff; border:none; border-radius:50%; width:36px; height:36px; cursor:pointer; flex-shrink:0;">➤</button>
+    <button type="button" id="micBtn" title="Click to talk"
+            style="background:#F1F0EE; color:#57534E; border:1px solid #E7E5E4; border-radius:50%; width:36px; height:36px; cursor:pointer; flex-shrink:0;">🎤</button>
+  </form>
+</div>
+
+<!-- ================= EXTRACTION DEBUG PANEL ================= -->
+<button id="extractDebugBtn" onclick="showExtractedContent()">🔍 Show extracted content</button>
+<div id="extractDebugPanel"></div>
+
+<script>
+const API_BASE = "http://127.0.0.1:8001";
+
+// ---- Same extraction logic as static/test-widget.html ----
+const CONTENT_NOISE_SELECTOR = [
+  "script", "style", "noscript", "svg", "iframe",
+  "nav", "footer", "header",
+  "[aria-hidden='true']", "[hidden]",
+  ".rozzgaar-chat-widget", "#rozzgaar-chat-widget", "#chat-widget",
+  "#widget", "#micBtn", "#extractDebugBtn", "#extractDebugPanel", // exclude the widget/debug UI itself
+].join(",");
+
+const MAIN_CONTENT_SELECTORS = [
+  ".dash-content",
+  "main", "[role='main']", "article",
+  "#content", ".content", "#app", "#root",
+];
+
+const MIN_USEFUL_CONTENT_CHARS = 40;
+const MAX_SENT_CONTENT_CHARS = 20000;
+
+function extractPageContent() {
+  let root = document.body;
+  let matchedSelector = "document.body (fallback)";
+  for (const selector of MAIN_CONTENT_SELECTORS) {
+    const el = document.querySelector(selector);
+    if (el && (el.innerText || "").trim().length > MIN_USEFUL_CONTENT_CHARS) {
+      root = el;
+      matchedSelector = selector;
+      break;
+    }
+  }
+  window.__lastMatchedSelector = matchedSelector; // exposed for the debug panel only
+
+  const clone = root.cloneNode(true);
+  clone.querySelectorAll(CONTENT_NOISE_SELECTOR).forEach((el) => el.remove());
+
+  // Tag headings so the backend can find and read back one named section
+  // instead of the whole page - see embed.js's extractPageContent().
+  clone.querySelectorAll("h1, h2, h3, h4, h5, h6").forEach((h) => {
+    const heading = (h.textContent || "").trim();
+    if (heading) h.textContent = `\n\n## ${heading}\n`;
+  });
+
+  const text = (clone.innerText || clone.textContent || "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return text.slice(0, MAX_SENT_CONTENT_CHARS);
+}
+
+function showExtractedContent() {
+  const panel = document.getElementById("extractDebugPanel");
+  const text = extractPageContent();
+  panel.textContent =
+    `Matched selector: ${window.__lastMatchedSelector}\n` +
+    `Length: ${text.length} chars\n` +
+    `${"-".repeat(40)}\n\n${text}`;
+  panel.style.display = panel.style.display === "block" ? "none" : "block";
+  console.log("[extractPageContent]", window.__lastMatchedSelector, text);
+}
+
+// ---- Minimal chat wiring (same request shape as the real widget) ----
+const log = document.getElementById("log");
+const form = document.getElementById("inputBar");
+const input = document.getElementById("input");
+const micBtn = document.getElementById("micBtn");
+
+// Speech playback via the browser's native Web Speech API - no network
+// request, no <audio src>/blob/data URI, so it matches embed.js exactly
+// (and sidesteps server-side TTS reliability entirely).
+function speakText(text, language) {
+  if (!text || !("speechSynthesis" in window)) return;
+  window.speechSynthesis.cancel(); // stop anything already speaking
+  const utterance = new SpeechSynthesisUtterance(text);
+  if (language && language !== "auto") utterance.lang = language;
+  window.speechSynthesis.speak(utterance);
+}
+
+function addMessage(text, who) {
+  const row = document.createElement("div");
+  row.style.display = "flex";
+  row.style.justifyContent = who === "user" ? "flex-end" : "flex-start";
+  const bubble = document.createElement("div");
+  bubble.style.cssText = `max-width:80%; padding:8px 12px; border-radius:12px; font-size:13.5px; background:${who === "user" ? "#FDE9DE" : "#fff"}; cursor:${who === "bot" ? "pointer" : "default"};`;
+  bubble.textContent = text;
+  row.appendChild(bubble);
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+  return bubble;
+}
+
+// Renders the backend's suggested_questions as clickable chips. Tapping
+// one fills the input and submits it, same as typing it by hand.
+function addSuggestedQuestions(questions) {
+  if (!questions || !questions.length) return;
+  const row = document.createElement("div");
+  row.style.cssText = "display:flex; flex-wrap:wrap; gap:6px; padding:2px 2px 6px;";
+  questions.forEach((q) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.textContent = q;
+    chip.style.cssText = "background:#fff; border:1px solid #E5E7EB; border-radius:14px; padding:6px 10px; font-size:12px; color:#57534E; cursor:pointer; text-align:left;";
+    chip.addEventListener("click", () => {
+      input.value = q;
+      form.dispatchEvent(new Event("submit", { cancelable: true }));
+    });
+    row.appendChild(chip);
+  });
+  log.appendChild(row);
+  log.scrollTop = log.scrollHeight;
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const message = input.value.trim();
+  if (!message) return;
+  addMessage(message, "user");
+  input.value = "";
+
+  try {
+    const res = await fetch(`${API_BASE}/chat/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message,
+        language: "auto",
+        page_url: location.href,
+        page_content: extractPageContent(),
+      }),
+    });
+    const data = await res.json();
+    const botDiv = addMessage(data.reply, "bot");
+    botDiv.title = "Click to hear this";
+    botDiv.onclick = () => speakText(data.reply, data.language);
+    addSuggestedQuestions(data.suggested_questions);
+  } catch (err) {
+    addMessage("Could not reach the backend - is uvicorn running on " + API_BASE + "?", "bot");
+  }
+});
+
+// ---- Voice input: click to start, click again to stop ----
+let mediaRecorder, audioChunks = [], isRecording = false;
+
+async function startRecording() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  mediaRecorder = new MediaRecorder(stream);
+  audioChunks = [];
+  mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
+  mediaRecorder.onstop = sendRecording;
+  mediaRecorder.start();
+  isRecording = true;
+  micBtn.style.background = "#FBE4D9";
+  micBtn.title = "Click to stop and send";
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+    mediaRecorder.stop();
+    mediaRecorder.stream.getTracks().forEach(t => t.stop());
+  }
+  isRecording = false;
+  micBtn.style.background = "#F1F0EE";
+  micBtn.title = "Click to talk";
+}
+
+async function sendRecording() {
+  const blob = new Blob(audioChunks, { type: "audio/webm" });
+  const placeholder = addMessage("🎙️ (transcribing...)", "user");
+
+  const formData = new FormData();
+  formData.append("audio", blob, "recording.webm");
+  formData.append("page_url", location.href);
+  formData.append("page_content", extractPageContent());
+
+  try {
+    const res = await fetch(`${API_BASE}/voice/chat`, { method: "POST", body: formData });
+    const data = await res.json();
+    placeholder.textContent = data.transcript;
+    const botDiv = addMessage(data.reply, "bot");
+    botDiv.title = "Click to hear this again";
+    botDiv.onclick = () => speakText(data.reply, data.language);
+    speakText(data.reply, data.language); // autoplay the spoken reply
+    addSuggestedQuestions(data.suggested_questions);
+  } catch (err) {
+    placeholder.textContent = "(transcription failed)";
+    addMessage("Could not reach the backend - is uvicorn running on " + API_BASE + "?", "bot");
+  }
+}
+
+micBtn.addEventListener("click", () => {
+  // Cut off any reply the widget is currently speaking - the user is
+  // about to talk, so it shouldn't keep talking over them.
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  if (isRecording) stopRecording(); else startRecording();
+});
+</script>
+</body>
+</html>

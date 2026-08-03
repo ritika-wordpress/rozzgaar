@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+requests
+beautifulsoup4
+scikit-learn
+joblib
+groq
+edge-tts
+gTTS
+python-dotenv
+python-multipart
+slowapi

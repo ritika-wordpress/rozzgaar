@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Lint with ruff
+        run: ruff check app/
+
+      - name: Verify app imports cleanly (catches circular imports / syntax errors)
+        env:
+          # Dummy values so Settings() doesn't fail in CI - real secrets are
+          # only ever set on the actual deployment, never here.
+          GROQ_API_KEY: "dummy-for-ci"
+          ROZZGAAR_OPEN_KEY: "dummy-for-ci"
+          ADMIN_SECRET: "dummy-for-ci"
+        run: python -c "import app.main"
+
+      - name: Fail if a .env file is committed
+        run: |
+          if git ls-files | grep -qx '.env'; then
+            echo "::error::A .env file is committed to the repo. Remove it and rotate any keys it contained."
+            exit 1
+          fi
