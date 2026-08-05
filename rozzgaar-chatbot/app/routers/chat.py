@@ -10,19 +10,14 @@ from app.services.content_fetcher import fetch_course_contents
 from app.services.intent import detect_intent, extract_module_query, extract_summary_word_count
 from app.services.knowledge_base import kb
 from app.services.language import resolve_language
-from app.services.reference_resolver import match_page_url, resolve_reference
+from app.services.reference_resolver import extract_slug_from_url, match_page_url, resolve_reference
 from app.services.section_finder import extract_heading_query, find_section
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 _MIN_LIVE_CONTENT_CHARS = 40  # ignore near-empty DOM captures (loading states, blank pages)
-# Only applied when live content is actually going INTO the LLM (summarize /
-# suggestions / plain Q&A context) - those calls need a bounded prompt. A
-# "read this page" request never hits the LLM for English text (it's echoed
-# straight back), so it must NOT be capped here or long pages would get cut
-# off mid-sentence instead of being read start to finish.
-_MAX_LIVE_CONTENT_CHARS_FOR_LLM = 20000
+_MAX_LIVE_CONTENT_CHARS = 20000  # cap what the widget sends before it hits the LLM
 
 
 class ResolvedContent(NamedTuple):
@@ -36,22 +31,12 @@ class ResolvedContent(NamedTuple):
 
 
 def _resolve_live_content(page_url: str | None, page_content: str | None) -> ResolvedContent | None:
-    """Keeps the FULL live page text - no truncation here. Callers that feed
-    this into the LLM (summarize/suggestions/QA) are responsible for capping
-    what they send via _for_llm(); a "read this page" request instead reads
-    this text back verbatim, start to finish."""
     text = (page_content or "").strip()
     if len(text) < _MIN_LIVE_CONTENT_CHARS:
         return None
-    text = " ".join(text.split())
+    text = " ".join(text.split())[:_MAX_LIVE_CONTENT_CHARS]
     title = "this page"
     return ResolvedContent(text=text, title=title, url=page_url, is_live=True)
-
-
-def _for_llm(text: str) -> str:
-    """Bounds text right before it's sent to the LLM (summarize/suggestions/
-    QA context). Never used on the path that reads content back to the user."""
-    return text[:_MAX_LIVE_CONTENT_CHARS_FOR_LLM]
 
 
 def _resolve_content(message: str, page_url: str | None, page_content: str | None) -> tuple[str | None, ResolvedContent | None]:
@@ -195,7 +180,7 @@ def _handle_summarize(message: str, slug: str | None, live: ResolvedContent | No
     # in 50 words" typed straight into chat; falls back to the normal short
     # summary when no word count was requested.
     word_count = extract_summary_word_count(message)
-    summary = llm.summarize(_for_llm(text), "short", language, title=title, word_count=word_count)
+    summary = llm.summarize(text, "short", language, title=title, word_count=word_count)
     return ChatResponse(reply=summary, language=language, sources=sources, suggested_questions=[])
 
 
@@ -209,7 +194,7 @@ def _handle_suggestions(slug: str | None, live: ResolvedContent | None, chunks, 
     else:
         context_text, sources = "\n".join(c.text for c in chunks), []
 
-    qa = llm.generate_suggested_questions(_for_llm(context_text), language, count=3)
+    qa = llm.generate_suggested_questions(context_text, language, count=3)
     questions = [item["question"] for item in qa if item.get("question")]
 
     reply = ("Here are some questions you could ask:"
@@ -247,13 +232,30 @@ def build_chat_response(
     needs_page_content = intent in ("read_content", "summarize", "suggestions")
     slug: str | None = None
     live: ResolvedContent | None = None
+    current_course_slug: str | None = None
     if needs_page_content:
         slug, live = _resolve_content(message, page_url, page_content)
     else:
         # Plain Q&A still benefits from a named reference (e.g. "does the
-        # EDP course cover X?"), just not from the live page fallback -
-        # general questions are answered from the indexed knowledge base.
+        # EDP course cover X?").
         slug = resolve_reference(message)
+        # It ALSO benefits from the live page content, same as read/summarize
+        # do - the pre-indexed knowledge base only holds course titles,
+        # descriptions, and module/chapter TITLES (see _course_to_text),
+        # not each chapter's actual body text. Without this, a question
+        # like "what is X" asked while looking straight at a chapter that
+        # explains X would find nothing, since X never made it into the
+        # index - only the live DOM capture has it. Skip this when a named
+        # reference already matched, since that's a more deliberate signal
+        # of what the user means than "whatever page happens to be open".
+        if not slug:
+            live = _resolve_live_content(page_url, page_content)
+            # Which course this page belongs to (from ?slug=... or
+            # /courses/<slug> in the URL) - lets a follow-up question that
+            # isn't answered by the current chapter's own text still be
+            # answered from elsewhere IN THE SAME COURSE (another chapter's
+            # title/description), without spilling into unrelated courses.
+            current_course_slug = extract_slug_from_url(page_url) if page_url else None
 
     chunks = kb.retrieve(message, top_k=5)
 
@@ -270,19 +272,40 @@ def build_chat_response(
     if intent == "suggestions":
         return _handle_suggestions(slug, live, chunks, language)
 
-    reply = llm.answer_with_context(message, [c.text for c in chunks], language)
+    # Plain Q&A: prefer chunks scoped to the SAME course as the page the
+    # user is on (current_course_slug) over the site-wide `chunks` search -
+    # this is what keeps "what is X" (asked on some chapter page) checking
+    # the rest of THAT course before ever touching other, unrelated
+    # courses. Falls back to the site-wide chunks when we don't know what
+    # course the user is on (e.g. homepage) or they named something
+    # specific (slug is set, via resolve_reference above).
+    if current_course_slug:
+        qa_chunks = kb.retrieve(message, top_k=5, restrict_to_slug=current_course_slug)
+    else:
+        qa_chunks = chunks
+
+    # Live page content goes FIRST so it's what the model leans on for a
+    # question about "this" chapter/course - the course-scoped chunks are
+    # included after it so the rest of the SAME course is checked before
+    # giving up (e.g. a term explained in an earlier chapter).
+    context_texts = [live.text] if live else []
+    context_texts += [c.text for c in qa_chunks]
+    reply = llm.answer_with_context(message, context_texts, language)
 
     seen = set()
     sources = []
-    for c in chunks:
+    if live and live.url:
+        sources.append(SourceRef(title=live.title, url=live.url))
+        seen.add(live.url)
+    for c in qa_chunks:
         if c.slug in seen:
             continue
         seen.add(c.slug)
         sources.append(SourceRef(title=c.title, url=c.url))
 
     suggestions: list[str] = []
-    if chunks:
-        context_text = "\n".join(c.text for c in chunks[:3])
+    if qa_chunks or live:
+        context_text = live.text if live else "\n".join(c.text for c in qa_chunks[:3])
         qa = llm.generate_suggested_questions(context_text, language, count=3)
         suggestions = [item["question"] for item in qa if item.get("question")]
 

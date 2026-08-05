@@ -35,18 +35,25 @@
     BACKEND_URL: "https://tropical-refocus-exact.ngrok-free.dev",
   };
 
-  // Minimal line-art assistant icon (replaces the emoji for a cleaner,
-  // more consistent look across devices/OS emoji fonts). `size` in px.
+  // Smiling robot icon matching the reference image the user provided:
+  // thin white outline, rounded-square head, antenna, single ear tick on
+  // each side, two dot eyes, and a smile curve. `size` in px.
+  //
+  // Every shape - antenna tip, ear ticks, head outline, eyes, mouth -
+  // sits comfortably inside a margin from the 0-24 viewBox edges
+  // (antenna top stops at y=1.95, ear ticks stop at x=2.9/x=21.1), so
+  // nothing clips or pokes out of the circular launcher button at any
+  // size - this was the original "edge" clipping problem.
   function assistantIconSvg(size) {
     return `
       <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M12 3v3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
-        <circle cx="12" cy="2.1" r="1.1" fill="currentColor"/>
-        <rect x="3.5" y="7" width="17" height="12.5" rx="5" stroke="currentColor" stroke-width="1.6"/>
-        <circle cx="9" cy="13.2" r="1.35" fill="currentColor"/>
-        <circle cx="15" cy="13.2" r="1.35" fill="currentColor"/>
-        <path d="M9.2 16.6c0.8 0.7 1.8 1.05 2.8 1.05s2-0.35 2.8-1.05" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-        <path d="M1.5 12h2M20.5 12h2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        <line x1="12" y1="2.6" x2="12" y2="5.4" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/>
+        <rect x="5.2" y="6.6" width="13.6" height="10.8" rx="3.4" fill="none" stroke="#fff" stroke-width="1.3"/>
+        <line x1="2.9" y1="10.6" x2="5.2" y2="10.6" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/>
+        <line x1="18.8" y1="10.6" x2="21.1" y2="10.6" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/>
+        <circle cx="9.3" cy="11.3" r="1" fill="#fff"/>
+        <circle cx="14.7" cy="11.3" r="1" fill="#fff"/>
+        <path d="M9.3 14.6 Q12 16.6 14.7 14.6" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/>
       </svg>`;
   }
 
@@ -76,6 +83,116 @@
         <circle cx="12" cy="14.6" r="1" fill="currentColor"/>
       </svg>`;
   }
+  // Sophisticated line-art microphone icon (replaces the plain emoji).
+  // Two states are drawn: idle (outline) and recording (filled), toggled
+  // via the rzg-mic-recording class in injectStyles() below.
+  function micIconSvg(size) {
+    return `
+      <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="9" y="2.5" width="6" height="11" rx="3" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M5.5 11.2v1a6.5 6.5 0 0 0 13 0v-1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+        <path d="M12 18.2v3M9 21.2h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      </svg>`;
+  }
+  // Sophisticated line-art speaker/volume icon (replaces the plain 🔊
+  // emoji on the sample-question chips - emoji rendering varies across
+  // devices/OS fonts, this stays consistent and matches the other
+  // stroke-based icons above).
+  function speakerIconSvg(size) {
+    return `
+      <svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M4.5 9.5v5h3l4.5 3.6V5.9L7.5 9.5h-3Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+        <path d="M16 9a4 4 0 0 1 0 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+        <path d="M18.6 6.8a7.5 7.5 0 0 1 0 10.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      </svg>`;
+  }
+
+  // Injects WhatsApp-style chat bubble CSS once per page: green tailed
+  // bubbles for the user (right), white tailed bubbles for the bot
+  // (left), and small timestamp text - matching WhatsApp's actual look.
+  function injectChatStyles() {
+    if (document.getElementById("rzg-chat-styles")) return;
+    const style = document.createElement("style");
+    style.id = "rzg-chat-styles";
+    style.textContent = `
+      #rzg-log {
+        background-color: #ECE5DD;
+      }
+      .rzg-bubble-row { display: flex; margin: 1px 0; }
+      .rzg-bubble {
+        position: relative;
+        max-width: 78%;
+        padding: 6px 8px 8px 9px;
+        font-size: 13.5px;
+        line-height: 1.35;
+        box-shadow: 0 1px 0.5px rgba(0,0,0,.13);
+        word-wrap: break-word;
+        white-space: pre-wrap;
+      }
+      .rzg-bubble-user {
+        margin-left: auto;
+        background: #FDE9DE;
+        border-radius: 8px;
+        color: #111;
+      }
+      .rzg-bubble-bot {
+        margin-right: auto;
+        background: #fff;
+        border-radius: 8px;
+        color: #111;
+        cursor: pointer;
+      }
+      .rzg-bubble-time {
+        display: block;
+        text-align: right;
+        font-size: 10.5px;
+        color: rgba(0,0,0,.45);
+        margin-top: 2px;
+        margin-left: 8px;
+        float: right;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+
+  // Injects the pulsing "listening" animation once per page. Applied to
+  // #rzg-micBtn via the .rzg-mic-recording class while recording is active.
+  function injectMicStyles() {
+    if (document.getElementById("rzg-mic-styles")) return;
+    const style = document.createElement("style");
+    style.id = "rzg-mic-styles";
+    style.textContent = `
+      @keyframes rzg-pulse-ring {
+        0%   { transform: scale(0.85); opacity: 0.55; }
+        70%  { transform: scale(1.9);  opacity: 0; }
+        100% { transform: scale(1.9);  opacity: 0; }
+      }
+      @keyframes rzg-mic-bounce {
+        0%, 100% { transform: scale(1); }
+        50%      { transform: scale(1.1); }
+      }
+      #rzg-micBtn { position: relative; transition: background .15s, color .15s, border-color .15s; }
+      #rzg-micBtn.rzg-mic-recording {
+        background: #E8734A !important;
+        color: #fff !important;
+        border-color: #E8734A !important;
+        animation: rzg-mic-bounce 1s ease-in-out infinite;
+      }
+      #rzg-micBtn.rzg-mic-recording::before,
+      #rzg-micBtn.rzg-mic-recording::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        border: 2px solid #E8734A;
+        animation: rzg-pulse-ring 1.6s ease-out infinite;
+        pointer-events: none;
+      }
+      #rzg-micBtn.rzg-mic-recording::after { animation-delay: .55s; }
+    `;
+    document.head.appendChild(style);
+  }
 
   // ------------------------------------------------------------------
   // Bilingual UI copy for the widget chrome itself (button labels, status
@@ -103,10 +220,13 @@
       samplePreparing: "नमूना सवाल तैयार हो रहे हैं...",
       sampleReady: "यहाँ कुछ नमूना सवाल हैं - दोबारा सुनने के लिए किसी पर टैप करें:",
       sampleFailed: "अभी सवाल नहीं बन पाए। कृपया दोबारा कोशिश करें।",
+      sampleChipLabel: "सवाल",
       sampleNone: "इस पेज के लिए कोई सवाल नहीं बन पाए।",
       clickToHear: "सुनने के लिए यहाँ दोबारा क्लिक करें",
       placeholder: "इस पेज के बारे में पूछें...",
       unreachable: "अभी सहायक तक नहीं पहुँच पा रहे - कृपया थोड़ी देर में कोशिश करें।",
+      closingReply: "आपके समय के लिए धन्यवाद! जब चाहें, फिर से जुड़ें। 👋",
+      micNoInput: "मुझे कुछ सुनाई नहीं दिया - माइक बटन दबाकर दोबारा कोशिश करें।",
     },
     en: {
       chooseLangTitle: "Choose language",
@@ -126,12 +246,41 @@
       samplePreparing: "Preparing sample questions...",
       sampleReady: "Here are some sample questions - tap any one to hear it again:",
       sampleFailed: "Could not prepare questions right now. Please try again.",
+      sampleChipLabel: "Question",
       sampleNone: "No questions could be generated for this page.",
       clickToHear: "Click here to hear this again",
       placeholder: "Ask about this page...",
       unreachable: "Could not reach the assistant right now - please try again in a moment.",
+      closingReply: "Thank you for your time. Feel free to connect anytime! 👋",
+      micNoInput: "I didn't hear anything - tap the mic button to try again.",
     },
   };
+
+  // Phrases (English + common Hindi/Hinglish variants) that mean "end the
+  // conversation" rather than a real question - checked against the raw
+  // transcript/typed text BEFORE it's sent to the backend, so "stop",
+  // "close this", "band karo" etc. close the widget instead of being
+  // treated as a chat message. Matches on trimmed, lowercased, punctuation
+  // -stripped text so short exact-ish phrases don't false-positive on
+  // longer real questions (e.g. "how do I stop the video" is NOT closed
+  // because it isn't an exact/near-exact match to a close phrase).
+  const CLOSE_COMMANDS = [
+    "close", "stop", "close this", "close it", "close chat", "close the chat",
+    "stop it", "bye", "bye bye", "goodbye", "good bye", "exit", "quit",
+    "end chat", "end the chat", "thats all", "that's all", "thanks bye",
+    "band karo", "bandh karo", "band kar do", "bandh kar do", "band kardo",
+    "bandh kardo", "close kar do", "close karo", "chat band karo",
+    "band karna", "ruk jao", "bas", "bas karo", "bye chatbot",
+  ];
+
+  function isCloseCommand(rawText) {
+    const text = (rawText || "")
+      .toLowerCase()
+      .trim()
+      .replace(/[.!?,]+$/g, "");
+    if (!text) return false;
+    return CLOSE_COMMANDS.includes(text);
+  }
 
   // ------------------------------------------------------------------
   // Page-content extraction (adapted for the real course-content.php
@@ -153,6 +302,7 @@
   ];
 
   const MIN_USEFUL_CONTENT_CHARS = 40;
+  const MAX_SENT_CONTENT_CHARS = 20000;
   const MODULE_TITLE_SELECTOR = ".viewer-title";
 
   function cleanElementText(el) {
@@ -168,14 +318,11 @@
       if (heading) h.textContent = `\n\n## ${heading}\n`;
     });
 
-    // No length cap here - a "read this page" request needs the ENTIRE
-    // page, however long. The backend is responsible for bounding what it
-    // hands to the LLM (summarize/suggestions); the read-back path uses
-    // this text verbatim, start to finish.
-    return (clone.innerText || clone.textContent || "")
+    const text = (clone.innerText || clone.textContent || "")
       .replace(/[ \t]+/g, " ")
       .replace(/\n{3,}/g, "\n\n")
       .trim();
+    return text.slice(0, MAX_SENT_CONTENT_CHARS);
   }
 
   function extractPageContent() {
@@ -364,22 +511,28 @@
                style="flex:1; padding:9px 12px; border-radius:18px; border:1px solid #E5E7EB; background:#F7F7F8; font-size:13.5px; outline:none;">
         <button type="submit" style="background:#E8734A; color:#fff; border:none; border-radius:50%; width:36px; height:36px; cursor:pointer; flex-shrink:0;">➤</button>
         <button type="button" id="rzg-micBtn" title="Click to talk"
-                style="background:#F1F0EE; color:#57534E; border:1px solid #E7E5E4; border-radius:50%; width:36px; height:36px; cursor:pointer; flex-shrink:0;">🎤</button>
+                style="background:#F1F0EE; color:#57534E; border:1px solid #E7E5E4; border-radius:50%; width:36px; height:36px; cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center;">${micIconSvg(17)}</button>
       </form>`;
 
+    injectMicStyles();
+    injectChatStyles();
     document.body.appendChild(wrap);
+
+    // Shared close/minimize logic - used by the header "−" button AND by
+    // voice/text close-command detection (see isCloseCommand in initWidget).
+    function closeWidget() {
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      wrap.style.display = "none";
+      launcher.style.display = "flex";
+    }
+    wrap.__rzgClose = closeWidget;
 
     // Open on launcher tap, minimize back to the launcher on header's "−".
     launcher.addEventListener("click", () => {
       wrap.style.display = "block";
       launcher.style.display = "none";
     });
-    wrap.querySelector("#rzg-minimizeBtn").addEventListener("click", () => {
-      // Stop anything mid-speech so it doesn't keep talking while hidden.
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-      wrap.style.display = "none";
-      launcher.style.display = "flex";
-    });
+    wrap.querySelector("#rzg-minimizeBtn").addEventListener("click", closeWidget);
 
     return wrap;
   }
@@ -430,15 +583,50 @@
 
     function addMessage(text, who) {
       const row = document.createElement("div");
-      row.style.display = "flex";
+      row.className = "rzg-bubble-row";
       row.style.justifyContent = who === "user" ? "flex-end" : "flex-start";
+
       const bubble = document.createElement("div");
-      bubble.style.cssText = `max-width:80%; padding:8px 12px; border-radius:12px; font-size:13.5px; background:${who === "user" ? "#FDE9DE" : "#fff"}; cursor:${who === "bot" ? "pointer" : "default"};`;
-      bubble.textContent = text;
+      bubble.className = who === "user" ? "rzg-bubble rzg-bubble-user" : "rzg-bubble rzg-bubble-bot";
+
+      const textSpan = document.createElement("span");
+      textSpan.textContent = text;
+      bubble.appendChild(textSpan);
+
+      const time = document.createElement("span");
+      time.className = "rzg-bubble-time";
+      time.textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      bubble.appendChild(time);
+
       row.appendChild(bubble);
       log.appendChild(row);
       log.scrollTop = log.scrollHeight;
       return bubble;
+    }
+
+    // Fires when the user's typed or spoken message is a close/stop
+    // command (see isCloseCommand). Shows + speaks a short farewell, then
+    // minimizes the widget back to the launcher bubble once the farewell
+    // finishes speaking (falls back to a fixed delay if speech synthesis
+    // isn't available, e.g. some in-app browsers).
+    function handleCloseCommand() {
+      const farewell = t("closingReply");
+      const botDiv = addMessage(farewell, "bot");
+      botDiv.title = t("clickToHear");
+      botDiv.onclick = () => speakText(farewell, sessionLanguage);
+
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+        const utterance = new SpeechSynthesisUtterance(farewell);
+        if (sessionLanguage && sessionLanguage !== "auto") utterance.lang = sessionLanguage;
+        utterance.onend = () => wrap.__rzgClose();
+        utterance.onerror = () => wrap.__rzgClose();
+        window.speechSynthesis.speak(utterance);
+        // Safety net in case onend/onerror never fire on some browsers.
+        setTimeout(() => wrap.__rzgClose(), 6000);
+      } else {
+        setTimeout(() => wrap.__rzgClose(), 1200);
+      }
     }
 
     // Renders the backend's suggested_questions as clickable chips. Tapping
@@ -471,9 +659,9 @@
       qaItems.forEach((qa, i) => {
         const chip = document.createElement("button");
         chip.type = "button";
-        chip.textContent = `🔊 सवाल ${i + 1}`;
+        chip.innerHTML = `<span style="display:flex; color:#A8A29E;">${speakerIconSvg(13)}</span><span>${t("sampleChipLabel")} ${i + 1}</span>`;
         chip.title = qa.question;
-        chip.style.cssText = "background:#fff; border:1px solid #E5E7EB; border-radius:14px; padding:6px 10px; font-size:12px; color:#57534E; cursor:pointer; text-align:left;";
+        chip.style.cssText = "display:flex; align-items:center; gap:4px; background:#fff; border:1px solid #E5E7EB; border-radius:14px; padding:6px 10px; font-size:12px; color:#57534E; cursor:pointer; text-align:left;";
         chip.addEventListener("click", () => {
           addMessage(qa.question, "user");
           const ansDiv = addMessage(qa.answer, "bot");
@@ -627,6 +815,11 @@
       addMessage(message, "user");
       input.value = "";
 
+      if (isCloseCommand(message)) {
+        handleCloseCommand();
+        return;
+      }
+
       try {
         // Try the page-intent shortcuts first (summarize / read module).
         const intentResult = await tryHandlePageIntent(message, sessionLanguage || "auto");
@@ -667,6 +860,66 @@
 
     // ---- Voice input ----
     let mediaRecorder, audioChunks = [], isRecording = false;
+    let recordStartedAt = 0;
+
+    // Two separate timeouts, both auto-stop-and-act without needing another
+    // click on the mic button:
+    //   - NO_INPUT_MS: nothing at all has been heard yet (user hasn't
+    //     started talking). Gives them a full 5s to start, then gives up
+    //     and shows/speaks a "didn't hear anything" prompt instead of
+    //     sending empty audio to the backend.
+    //   - SILENCE_MS: the user WAS talking and has now paused. Auto-stops
+    //     quickly and sends what was recorded - no click needed.
+    // hasDetectedSpeech is what decides which of the two applies at any
+    // moment: before the first real sound, NO_INPUT_MS governs; once real
+    // speech is heard, SILENCE_MS takes over for the rest of the recording.
+    const SILENCE_THRESHOLD = 0.015; // RMS level below which audio counts as silence
+    const SILENCE_MS = 1400;         // how long a pause after speech must persist to auto-send
+    const MIN_RECORD_MS = 700;       // minimum recording length before that auto-send can fire
+    const NO_INPUT_MS = 5000;        // how long to wait for the user to say anything at all
+    let audioCtx, analyserNode, silenceRafId, silenceStartedAt = null;
+    let hasDetectedSpeech = false;
+    // Set right before an auto-stop that should NOT send audio (currently
+    // only the no-input case) - sendRecording() checks and clears this.
+    let skipSendReason = null;
+
+    function watchForSilence() {
+      const data = new Uint8Array(analyserNode.fftSize);
+      const tick = () => {
+        if (!isRecording) return;
+        analyserNode.getByteTimeDomainData(data);
+        let sumSquares = 0;
+        for (let i = 0; i < data.length; i++) {
+          const normalized = (data[i] - 128) / 128;
+          sumSquares += normalized * normalized;
+        }
+        const rms = Math.sqrt(sumSquares / data.length);
+        const recordedFor = Date.now() - recordStartedAt;
+
+        if (rms >= SILENCE_THRESHOLD) {
+          hasDetectedSpeech = true;
+          silenceStartedAt = null;
+        } else if (!hasDetectedSpeech) {
+          // Still waiting for the user to say their first word.
+          if (recordedFor > NO_INPUT_MS) {
+            skipSendReason = "no_input";
+            stopRecording();
+            return;
+          }
+        } else {
+          // Already heard speech at least once - now watching for a pause
+          // that means they're done talking.
+          if (silenceStartedAt === null) silenceStartedAt = Date.now();
+          const silentFor = Date.now() - silenceStartedAt;
+          if (silentFor > SILENCE_MS && recordedFor > MIN_RECORD_MS) {
+            stopRecording();
+            return;
+          }
+        }
+        silenceRafId = requestAnimationFrame(tick);
+      };
+      tick();
+    }
 
     async function startRecording() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -676,8 +929,20 @@
       mediaRecorder.onstop = sendRecording;
       mediaRecorder.start();
       isRecording = true;
-      micBtn.style.background = "#FBE4D9";
-      micBtn.title = "Click to stop and send";
+      recordStartedAt = Date.now();
+      hasDetectedSpeech = false;
+      skipSendReason = null;
+      micBtn.classList.add("rzg-mic-recording");
+      micBtn.title = "Listening... speak now (click to stop)";
+
+      // Set up live volume monitoring so we can auto-stop on silence.
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(stream);
+      analyserNode = audioCtx.createAnalyser();
+      analyserNode.fftSize = 512;
+      source.connect(analyserNode);
+      silenceStartedAt = null;
+      watchForSilence();
     }
 
     function stopRecording() {
@@ -686,11 +951,25 @@
         mediaRecorder.stream.getTracks().forEach((t) => t.stop());
       }
       isRecording = false;
-      micBtn.style.background = "#F1F0EE";
+      micBtn.classList.remove("rzg-mic-recording");
       micBtn.title = "Click to talk";
+      if (silenceRafId) cancelAnimationFrame(silenceRafId);
+      if (audioCtx) { audioCtx.close(); audioCtx = null; }
+      analyserNode = null;
+      silenceStartedAt = null;
     }
 
     async function sendRecording() {
+      if (skipSendReason === "no_input") {
+        skipSendReason = null;
+        const msg = t("micNoInput");
+        const botDiv = addMessage(msg, "bot");
+        botDiv.title = t("clickToHear");
+        botDiv.onclick = () => speakText(msg, sessionLanguage);
+        speakText(msg, sessionLanguage);
+        return;
+      }
+
       const blob = new Blob(audioChunks, { type: "audio/webm" });
       const placeholder = addMessage("🎤 (transcribing...)", "user");
 
@@ -719,6 +998,12 @@
         }
 
         placeholder.textContent = data.transcript;
+
+        if (isCloseCommand(data.transcript)) {
+          handleCloseCommand();
+          return;
+        }
+
         const botDiv = addMessage(data.reply, "bot");
         if (data.reply) {
           botDiv.title = t("clickToHear");
