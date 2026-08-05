@@ -1,0 +1,21 @@
+services:
+  rozzgaar-chatbot:
+    build: .
+    image: rozzgaar-chatbot:latest
+    container_name: rozzgaar-chatbot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - PORT=8080
+    ports:
+      - "8080:8080"
+    volumes:
+      # Persist the built knowledge base across container restarts/redeploys
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
