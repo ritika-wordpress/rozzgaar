@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
+from app.limiter import limiter
 from app.models.schemas import QAItem, SuggestQuestionsRequest, SuggestQuestionsResponse
 from app.services import llm
 from app.services.knowledge_base import kb
@@ -9,7 +10,8 @@ router = APIRouter(prefix="/suggestions", tags=["suggestions"])
 
 
 @router.post("/", response_model=SuggestQuestionsResponse)
-def suggest_questions(payload: SuggestQuestionsRequest) -> SuggestQuestionsResponse:
+@limiter.limit("20/minute")
+def suggest_questions(request: Request, payload: SuggestQuestionsRequest) -> SuggestQuestionsResponse:
     context_text = None
     if payload.text and payload.text.strip():
         # Raw text (e.g. text scraped live from the page by the widget) is

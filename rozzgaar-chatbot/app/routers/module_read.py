@@ -1,9 +1,10 @@
 import logging
 import re
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from app.limiter import limiter
 from app.services.content_fetcher import fetch_course_contents
 from app.services.language import resolve_language
 from app.services.llm import translate
@@ -58,7 +59,8 @@ def _find_module(modules: list[dict], module_query: str) -> dict | None:
 
 
 @router.post("/read")
-async def read_module(payload: ModuleReadRequest):
+@limiter.limit("20/minute")
+async def read_module(request: Request, payload: ModuleReadRequest):
     contents = fetch_course_contents(payload.course_slug)
     if not contents:
         raise HTTPException(404, f"Course '{payload.course_slug}' not found or has no contents.")

@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
+from app.limiter import limiter
 from app.models.schemas import SummarizeRequest, SummarizeResponse
 from app.services import llm
 from app.services.intent import extract_summary_word_count
@@ -10,7 +11,8 @@ router = APIRouter(prefix="/summarize", tags=["summarize"])
 
 
 @router.post("/", response_model=SummarizeResponse)
-def summarize(payload: SummarizeRequest) -> SummarizeResponse:
+@limiter.limit("20/minute")
+def summarize(request: Request, payload: SummarizeRequest) -> SummarizeResponse:
     slug = payload.course_slug or payload.bundle_slug
     title = None
     text = payload.text

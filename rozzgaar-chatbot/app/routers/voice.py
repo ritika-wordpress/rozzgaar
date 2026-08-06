@@ -1,14 +1,18 @@
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 
+from app.limiter import limiter
 from app.models.schemas import VoiceChatResponse
 from app.routers.chat import build_chat_response
 from app.services.stt import transcribe_audio
+from app.services.uploads import read_capped
 
 router = APIRouter(prefix="/voice", tags=["voice"])
 
 
 @router.post("/chat", response_model=VoiceChatResponse)
+@limiter.limit("10/minute")
 async def voice_chat(
+    request: Request,
     audio: UploadFile = File(...),
     page_url: str | None = Form(None),
     page_content: str | None = Form(None),
@@ -23,7 +27,7 @@ async def voice_chat(
 
     page_url/page_content are optional, same meaning as on the text /chat/
     endpoint - send them so "read this page" works by voice too."""
-    raw_audio = await audio.read()
+    raw_audio = await read_capped(audio)
     transcript = transcribe_audio(raw_audio, filename=audio.filename or "audio.webm")
 
     chat_result = build_chat_response(transcript, requested_language=language or "auto",
