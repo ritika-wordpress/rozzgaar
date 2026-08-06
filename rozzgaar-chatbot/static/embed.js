@@ -7,7 +7,7 @@
  * ?slug=... at runtime), adding it there once makes the widget appear
  * on every course page automatically - no per-course wiring needed.
  *
- *   <script defer src="https://tropical-refocus-exact.ngrok-free.dev/static/embed.js"></script>
+ *   <script defer src="https://api.rozzgaar.in/static/embed.js"></script>
  *
  * What it does:
  *   1. Injects the chat bubble UI once the DOM is ready (never touches
@@ -32,7 +32,7 @@
   // CONFIG - only line you should need to touch when the tunnel changes.
   // ------------------------------------------------------------------
   const CONFIG = {
-    BACKEND_URL: "https://tropical-refocus-exact.ngrok-free.dev",
+    BACKEND_URL: "https://api.rozzgaar.in",
   };
 
   // Smiling robot icon matching the reference image the user provided:
