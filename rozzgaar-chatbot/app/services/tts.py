@@ -1,6 +1,7 @@
 import asyncio
 import io
 import logging
+import re
 
 import edge_tts
 from gtts import gTTS
@@ -8,6 +9,40 @@ from gtts import gTTS
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# Strips markdown/formatting symbols and other non-speech characters so the
+# TTS engines don't literally read out things like "asterisk asterisk" or
+# "hash hash" for **bold** / ## Heading text coming from the LLM.
+_MARKDOWN_PATTERNS = [
+    (re.compile(r"```.*?```", re.DOTALL), " "),   # fenced code blocks
+    (re.compile(r"`([^`]*)`"), r"\1"),             # inline code
+    (re.compile(r"^#{1,6}\s*", re.MULTILINE), ""), # headings
+    (re.compile(r"\*\*(.*?)\*\*"), r"\1"),         # bold
+    (re.compile(r"\*(.*?)\*"), r"\1"),             # italics
+    (re.compile(r"__(.*?)__"), r"\1"),             # bold (underscore)
+    (re.compile(r"_(.*?)_"), r"\1"),               # italics (underscore)
+    (re.compile(r"~~(.*?)~~"), r"\1"),             # strikethrough
+    (re.compile(r"^\s*[-*+]\s+", re.MULTILINE), ""),  # bullet list markers
+    (re.compile(r"^\s*\d+\.\s+", re.MULTILINE), ""),  # numbered list markers
+    (re.compile(r"\[([^\]]*)\]\([^)]*\)"), r"\1"),  # markdown links -> text
+    (re.compile(r"[#*_~`>|]"), " "),                # any leftover markdown symbols
+    (re.compile(r"[\U0001F300-\U0001FAFF\U00002600-\U000027BF]"), " "),  # emoji
+]
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def clean_text_for_speech(text: str) -> str:
+    """Removes markdown formatting, emoji, and other special characters that
+    should not be read aloud, while preserving normal punctuation (.,!?;:'"-)
+    that helps TTS engines produce natural pacing/intonation."""
+    if not text:
+        return text
+    cleaned = text
+    for pattern, repl in _MARKDOWN_PATTERNS:
+        cleaned = pattern.sub(repl, cleaned)
+    cleaned = _WHITESPACE_RE.sub(" ", cleaned).strip()
+    return cleaned
 
 _VOICE_BY_LANG = {
     "hi": settings.tts_voice_hi,   # e.g. hi-IN-SwaraNeural
@@ -98,6 +133,11 @@ async def synthesize_speech(text: str, language: str, voice: str | None = None) 
     provider/network path) rather than returning no audio at all. Only
     returns None if both providers fail, so callers can fall back to a
     text-only reply rather than 500ing."""
+    text = clean_text_for_speech(text)
+    if not text:
+        logger.warning("Nothing left to speak after cleaning special characters for language=%s", language)
+        return None
+
     selected_voice = pick_voice(language, voice)
     for attempt in (1, 2):
         try:
@@ -117,3 +157,6 @@ async def synthesize_speech(text: str, language: str, voice: str | None = None) 
 
     logger.info("Falling back to gTTS for language=%s after edge-tts failed twice", language)
     return await _gtts_fallback(text, language)
+
+
+
