@@ -32,7 +32,7 @@
   // CONFIG - only line you should need to touch when the tunnel changes.
   // ------------------------------------------------------------------
   const CONFIG = {
-    BACKEND_URL: "https://api.rozzgaar.in",
+    BACKEND_URL: "https://api.rozzgaar.in",  // public backend URL (App Runner / ALB / CloudFront)
   };
 
   // Smiling robot icon matching the reference image the user provided:

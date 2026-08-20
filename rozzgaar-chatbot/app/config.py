@@ -14,7 +14,7 @@ class Settings(BaseSettings):
 
     # Groq LLM
     groq_api_key: str = ""
-    groq_model: str = "llama-3.3-70b-versatile"
+    groq_model: str = "openai/gpt-oss-20b"
     groq_stt_model: str = "whisper-large-v3-turbo"
 
     # Admin
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # it's served, so the widget always points at the right tunnel - update
     # this in .env whenever ngrok restarts and hands out a new URL, no need
     # to hand-edit embed.js.
-    public_backend_url: str = "https://tropical-refocus-exact.ngrok-free.dev"
+    public_backend_url: str = "https://api.rozzgaar.in"
 
     # Storage
     data_dir: str = "./data"
