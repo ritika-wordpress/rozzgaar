@@ -45,7 +45,6 @@
   // CONFIG - only line you should need to touch when the tunnel changes.
   // ------------------------------------------------------------------
   const CONFIG = {
-    BACKEND_URL: "http://localhost:8000",
     // How long a cached Summary / Sample Q&A / translated-Read response
     // stays valid before it's treated as stale and regenerated. Keyed by
     // a hash of the page's own content (see hashText()/contentHash()), so
@@ -54,7 +53,9 @@
     // content that never changes on its own. Bump this down if you want
     // fresher content sooner; the widget re-hashes and re-fetches on its
     // own the instant content_hash changes, well before this TTL hits.
-    CACHE_TTL_DAYS: 182, // ~6 months
+
+    BACKEND_URL: "https://api.rozzgaar.in", 
+ // public backend URL (App Runner / ALB / CloudFront)
   };
 
   // ------------------------------------------------------------------
