@@ -48,6 +48,35 @@ class SummarizeResponse(BaseModel):
     source_title: Optional[str] = None
 
 
+class VideoSummarizeRequest(BaseModel):
+    # The lecture video's direct URL (the <source src="..."> the widget
+    # already reads off the page - see static/embed.js getActiveVideoUrl()).
+    # Only URLs on an allow-listed host are accepted server-side (see
+    # settings.allowed_video_domain_list) - this is fetched server-side,
+    # so an arbitrary URL here would otherwise be an SSRF vector.
+    video_url: str
+    length: Literal["short", "long"] = "short"
+    language: Language = "auto"
+    message: Optional[str] = None
+    # Optional chapter/module title from the page (e.g. .viewer-title's
+    # text) purely for a nicer source_title in the response - never used
+    # to locate the video itself.
+    module_title: Optional[str] = None
+    word_count: Optional[int] = None
+
+
+class VideoSummarizeResponse(BaseModel):
+    summary: str
+    length: Literal["short", "long"]
+    language: Literal["en", "hi"]
+    source_title: Optional[str] = None
+    # Whether this transcript came from the on-disk cache (near-instant)
+    # or was just freshly downloaded+transcribed (can take a while) - lets
+    # the widget show/skip a "this may take a minute" hint appropriately
+    # on repeat requests for the same video.
+    transcript_cached: bool = False
+
+
 class QAItem(BaseModel):
     question: str
     answer: str
@@ -66,6 +95,23 @@ class SuggestQuestionsResponse(BaseModel):
     language: Literal["en", "hi"]
 
 
+class TranslateBatchRequest(BaseModel):
+    # Each string is one DOM text node's content, in DOM order. The response
+    # returns translations in the exact same order/length so the widget can
+    # zip them straight back onto the nodes that produced them - this is
+    # what makes it a real "translate in place", not a rebuild of the page.
+    texts: list[str]
+    language: Language = "auto"
+    # The user's own language pick, if any (e.g. from the langGate button) -
+    # used the same way SummarizeRequest.message is, to resolve "auto".
+    message: Optional[str] = None
+
+
+class TranslateBatchResponse(BaseModel):
+    texts: list[str]
+    language: Literal["en", "hi"]
+
+
 class TTSRequest(BaseModel):
     text: str
     language: Language = "auto"
@@ -77,6 +123,10 @@ class IngestResponse(BaseModel):
     bundles_indexed: int
     pages_indexed: int
     chunks_indexed: int
+    # How many docs' Hindi translation was reused unchanged (content hash
+    # matched the last refresh) vs. actually regenerated via Groq this run.
+    translations_reused: int = 0
+    translations_regenerated: int = 0
 
 
 class STTResponse(BaseModel):

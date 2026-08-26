@@ -2,9 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps: only certs/curl needed (no ffmpeg - tts libs are pure HTTP/python)
+# System deps: curl for the healthcheck, ffmpeg for extracting/compressing
+# audio from lecture videos before sending it to Whisper (video summarize
+# feature - app/services/video_transcript.py). TTS/STT libs themselves are
+# pure HTTP/python and don't need it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
+        ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps first for better layer caching

@@ -5,14 +5,15 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from groq import RateLimitError
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.config import settings
 from app.limiter import limiter
-from app.routers import chat, ingest, module_read, stt, suggestions, summarize, tts, voice
+from app.routers import chat, ingest, module_read, stt, suggestions, summarize, translate, tts, voice
 from app.services.knowledge_base import kb
 
 # edge-tts (used by app/services/tts.py) relies on the `websockets` library
@@ -39,6 +40,21 @@ app = FastAPI(
 # on /ingest/refresh. Limits are set per-router below.
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(RateLimitError)
+def groq_rate_limit_handler(request, exc: RateLimitError):
+    # Catch-all fallback so a Groq daily/per-minute limit surfaces as a
+    # clean 503 everywhere (chat, summarize, suggestions, voice, etc.)
+    # instead of an unhandled 500 + traceback - translate/batch has its
+    # own more specific handling above this, so this only fires for
+    # everything else that calls into app/services/llm.py.
+    logging.warning("Groq rate limit hit: %s", exc)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "This feature is temporarily unavailable (Groq rate limit reached). "
+                            "Please try again shortly."},
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,10 +95,26 @@ app.include_router(stt.router)
 app.include_router(voice.router)
 app.include_router(module_read.router)
 app.include_router(ingest.router)
+app.include_router(translate.router)
 
 
 @app.on_event("startup")
 def startup():
+    # Logs which Groq key is actually active (masked) and whether it's
+    # even set, so "I changed the key but it's still rate-limited" is
+    # never ambiguous again - check this line against console.groq.com to
+    # confirm the running process picked up the key you think it did.
+    # (Also: Groq's daily token limit is per ORGANIZATION, not per key - a
+    # new key from the same Groq account still shares the same exhausted
+    # daily budget. A rate limit surviving a genuine key swap means either
+    # the new key wasn't picked up, or it's from the same account.)
+    key = settings.groq_api_key
+    if not key:
+        logging.warning("GROQ_API_KEY is not set - Groq calls will fail. Set it in .env.")
+    else:
+        masked = f"{key[:7]}...{key[-4:]}" if len(key) > 12 else "(too short to mask safely)"
+        logging.info("Groq API key in use: %s", masked)
+
     if not kb.load():
         logging.info("No cached knowledge base found on disk yet. "
                       "Call POST /ingest/refresh (with X-Admin-Secret header) to build one.")

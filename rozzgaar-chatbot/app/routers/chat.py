@@ -12,6 +12,7 @@ from app.services.knowledge_base import kb
 from app.services.language import resolve_language
 from app.services.reference_resolver import extract_slug_from_url, match_page_url, resolve_reference
 from app.services.section_finder import extract_heading_query, find_section
+from app.services.text_clean import strip_decorative_symbols
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -35,6 +36,7 @@ def _resolve_live_content(page_url: str | None, page_content: str | None) -> Res
     if len(text) < _MIN_LIVE_CONTENT_CHARS:
         return None
     text = " ".join(text.split())[:_MAX_LIVE_CONTENT_CHARS]
+    text = strip_decorative_symbols(text)
     title = "this page"
     return ResolvedContent(text=text, title=title, url=page_url, is_live=True)
 
@@ -77,7 +79,10 @@ def _resolve_content(message: str, page_url: str | None, page_content: str | Non
 
 def _read_full_doc(slug: str, language: str) -> ChatResponse:
     """Reads back a static page (or a course/bundle with no specific
-    chapter mentioned) using its full indexed text."""
+    chapter mentioned) using its full indexed text. For Hindi, this comes
+    straight from kb's pre-built translation cache (see
+    KnowledgeBase._refresh_translations) - no live Groq call, so this is
+    instant regardless of the page's own source language."""
     doc = kb.get_full_doc(slug)
     if not doc or not doc.text.strip():
         reply = ("I don't have content indexed for that page yet."
@@ -85,7 +90,10 @@ def _read_full_doc(slug: str, language: str) -> ChatResponse:
                   "मेरे पास अभी उस पेज की जानकारी उपलब्ध नहीं है।")
         return ChatResponse(reply=reply, language=language, sources=[], suggested_questions=[])
 
-    return _text_to_read_response(doc.text, language, SourceRef(title=doc.title, url=doc.url))
+    text = kb.get_full_text(slug, language) or doc.text
+    return ChatResponse(reply=text, language=language,
+                         sources=[SourceRef(title=doc.title, url=doc.url)],
+                         suggested_questions=[])
 
 
 def _text_to_read_response(text: str, language: str, source: SourceRef | None) -> ChatResponse:
@@ -303,17 +311,22 @@ def build_chat_response(
         seen.add(c.slug)
         sources.append(SourceRef(title=c.title, url=c.url))
 
-    suggestions: list[str] = []
-    if qa_chunks or live:
-        context_text = live.text if live else "\n".join(c.text for c in qa_chunks[:3])
-        qa = llm.generate_suggested_questions(context_text, language, count=3)
-        suggestions = [item["question"] for item in qa if item.get("question")]
-
+    # NOTE: suggested follow-up questions are intentionally NOT
+    # auto-generated here anymore. This used to fire an extra Groq call
+    # after every single plain Q&A answer (doubling call volume for
+    # ordinary chat traffic, for a "nice to have" that most users never
+    # click) - the dedicated "Sample Questions" button/quick-action still
+    # gets real suggestions via /suggestions/ (app/routers/suggestions.py),
+    # which is unaffected by this. If you want auto-suggestions back for
+    # Q&A turns specifically, reinstate a llm.generate_suggested_questions
+    # call here, but consider gating it (e.g. only for indexed/cacheable
+    # slugs, not live per-message page text) so it doesn't reintroduce the
+    # same daily-token drain.
     return ChatResponse(
         reply=reply,
         language=language,
         sources=sources,
-        suggested_questions=suggestions,
+        suggested_questions=[],
     )
 
 

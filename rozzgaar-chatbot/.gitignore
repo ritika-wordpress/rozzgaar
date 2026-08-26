@@ -1,23 +1,22 @@
-# Secrets — never commit
+# Environment / secrets
 .env
 .env.*
 !.env.example
 
 # Python
 __pycache__/
-*.py[cod]
-*.egg-info/
+*.pyc
+*.pyo
 .venv/
 venv/
-env/
+*.egg-info/
 
-# Data / generated
+# Generated / runtime data
+data/llm_response_cache.json
 data/*.joblib
-data/cache/
 
-# Editor/OS
-.vscode/
+# OS / editor cruft
 .DS_Store
-
-# Logs
-*.log
+Thumbs.db
+.vscode/
+.idea/

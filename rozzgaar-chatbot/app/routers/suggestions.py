@@ -5,6 +5,7 @@ from app.models.schemas import QAItem, SuggestQuestionsRequest, SuggestQuestions
 from app.services import llm
 from app.services.knowledge_base import kb
 from app.services.language import resolve_language
+from app.services.text_clean import strip_decorative_symbols
 
 router = APIRouter(prefix="/suggestions", tags=["suggestions"])
 
@@ -29,6 +30,7 @@ def suggest_questions(request: Request, payload: SuggestQuestionsRequest) -> Sug
     else:
         raise HTTPException(status_code=400, detail="Provide text, course_slug, or topic.")
 
+    context_text = strip_decorative_symbols(context_text)
     language = resolve_language(payload.language, context_text[:500])
     qa = llm.generate_suggested_questions(context_text, language, count=payload.count)
 

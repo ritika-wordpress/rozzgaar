@@ -1,5 +1,7 @@
+import hashlib
 import os
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import joblib
@@ -51,6 +53,15 @@ class KnowledgeBase:
         self.matrix = None
         # slug -> full concatenated text, for direct course/bundle summarization
         self.full_docs: dict[str, RawDoc] = {}
+        # slug -> {"hash": sha256 of the English text this was translated
+        # from, "hi": the Hindi translation}. Pre-built once per doc during
+        # build() (see _refresh_translations) so a Hindi read/summary of an
+        # indexed course/bundle/page never waits on a live Groq translate
+        # call - it's already sitting here. Rebuilt automatically whenever
+        # a doc's English text hash changes (edited course content); a doc
+        # whose text hasn't changed since the last refresh reuses its
+        # existing translation instead of paying for a re-translate.
+        self.translations: dict[str, dict] = {}
 
     @property
     def path(self) -> str:
@@ -76,11 +87,14 @@ class KnowledgeBase:
         vectorizer = TfidfVectorizer(max_features=20000, ngram_range=(1, 2))
         matrix = vectorizer.fit_transform([c.text for c in chunks]) if chunks else None
 
+        translations = self._refresh_translations(full_docs)
+
         with self._lock:
             self.chunks = chunks
             self.vectorizer = vectorizer
             self.matrix = matrix
             self.full_docs = full_docs
+            self.translations = translations
 
         self.save()
         return {
@@ -88,7 +102,48 @@ class KnowledgeBase:
             "bundles_indexed": bundles,
             "pages_indexed": pages,
             "chunks_indexed": len(chunks),
+            "translations_reused": sum(1 for slug in translations if self._was_reused(slug, translations)),
+            "translations_regenerated": sum(1 for slug in translations if not self._was_reused(slug, translations)),
         }
+
+    def _was_reused(self, slug: str, translations: dict) -> bool:
+        return translations.get(slug, {}).get("reused", False)
+
+    def _refresh_translations(self, full_docs: dict[str, RawDoc]) -> dict[str, dict]:
+        """Pre-translates every indexed doc's full text into Hindi, once,
+        here at ingest time - not on-demand per request. A doc whose
+        English text is byte-identical to what it was last time this ran
+        (same sha256 hash) reuses its existing Hindi translation instead of
+        calling Groq again; only genuinely new/changed docs get translated.
+        This is what makes /ingest/refresh double as "keep the Hindi cache
+        in sync with content changes" - no separate cron/hook needed."""
+        # Local import avoids a circular import at module load time
+        # (app.services.llm doesn't import knowledge_base, but importing it
+        # up top here would run llm.py's Groq client construction before
+        # settings are fully ready in some startup orderings).
+        from app.services import llm
+
+        previous = self.translations  # whatever was loaded from disk / the prior build
+
+        def _translate_one(item: tuple[str, RawDoc]) -> tuple[str, dict]:
+            slug, doc = item
+            text_hash = hashlib.sha256(doc.text.encode("utf-8")).hexdigest()
+            cached = previous.get(slug)
+            if cached and cached.get("hash") == text_hash:
+                return slug, {"hash": text_hash, "hi": cached.get("hi", ""), "reused": True}
+            hi_text = llm.translate(doc.text, "hi") if doc.text.strip() else ""
+            return slug, {"hash": text_hash, "hi": hi_text, "reused": False}
+
+        items = list(full_docs.items())
+        if not items:
+            return {}
+        # Docs are independent Groq calls (when they need one at all), so
+        # they're dispatched in parallel rather than one at a time - this
+        # is what keeps a full-catalogue refresh from taking N times as
+        # long as translating a single course.
+        with ThreadPoolExecutor(max_workers=min(6, len(items))) as pool:
+            results = list(pool.map(_translate_one, items))
+        return dict(results)
 
     def save(self):
         os.makedirs(settings.data_dir, exist_ok=True)
@@ -97,6 +152,7 @@ class KnowledgeBase:
             "vectorizer": self.vectorizer,
             "matrix": self.matrix,
             "full_docs": self.full_docs,
+            "translations": self.translations,
         }, self.path)
 
     def load(self) -> bool:
@@ -108,6 +164,11 @@ class KnowledgeBase:
             self.vectorizer = state["vectorizer"]
             self.matrix = state["matrix"]
             self.full_docs = state["full_docs"]
+            # Older kb.joblib files saved before this cache existed won't
+            # have this key - fall back to empty so load() doesn't crash on
+            # them (build() will simply translate everything fresh on the
+            # next /ingest/refresh instead of reusing anything).
+            self.translations = state.get("translations", {})
         return True
 
     def retrieve(self, query: str, top_k: int = 5, restrict_to_slug: str | None = None) -> list[Chunk]:
@@ -132,6 +193,26 @@ class KnowledgeBase:
 
     def get_full_doc(self, slug: str) -> RawDoc | None:
         return self.full_docs.get(slug)
+
+    def get_full_text(self, slug: str, language: str) -> str | None:
+        """Full text of an indexed doc in the requested language - English
+        straight from full_docs, Hindi from the pre-built translations
+        cache (falling back to a live translate only if that doc somehow
+        wasn't covered by the last /ingest/refresh, e.g. it was added and
+        this got called before a refresh ran). Callers that have a slug
+        (an indexed course/bundle/page) should always go through this
+        instead of calling llm.translate() directly, so they get the
+        instant cached path."""
+        doc = self.full_docs.get(slug)
+        if not doc:
+            return None
+        if language != "hi":
+            return doc.text
+        cached = self.translations.get(slug)
+        if cached and cached.get("hi"):
+            return cached["hi"]
+        from app.services import llm  # local import, see _refresh_translations
+        return llm.translate(doc.text, "hi")
 
 
 # single shared instance used across the app
