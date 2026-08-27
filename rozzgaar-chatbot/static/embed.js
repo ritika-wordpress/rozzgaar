@@ -45,7 +45,7 @@
   // CONFIG - only line you should need to touch when the tunnel changes.
   // ------------------------------------------------------------------
   const CONFIG = {
-    BACKEND_URL: "http://localhost:8000",
+    BACKEND_URL: "https://api.rozzgaar.in", // no trailing slash
     // How long a cached Summary / Sample Q&A / translated-Read response
     // stays valid before it's treated as stale and regenerated. Keyed by
     // a hash of the page's own content (see hashText()/contentHash()), so
