@@ -16,7 +16,7 @@ _MAX_TOTAL_CHARS = 60000
 
 
 @router.post("/batch", response_model=TranslateBatchResponse)
-@limiter.limit("15/minute")
+@limiter.limit("60/minute")
 def translate_batch(request: Request, payload: TranslateBatchRequest) -> TranslateBatchResponse:
     texts = payload.texts
     if not texts:

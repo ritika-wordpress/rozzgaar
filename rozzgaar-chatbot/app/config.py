@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     groq_model: str = ""
     groq_stt_model: str = ""
 
-
     # Admin
     admin_secret: str = ""
 
@@ -38,7 +37,6 @@ class Settings(BaseSettings):
     # this in .env whenever ngrok restarts and hands out a new URL, no need
     # to hand-edit embed.js.
     public_backend_url: str = ""
-
 
     # Storage
     data_dir: str = ""

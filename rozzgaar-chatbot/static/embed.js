@@ -45,6 +45,7 @@
   // CONFIG - only line you should need to touch when the tunnel changes.
   // ------------------------------------------------------------------
   const CONFIG = {
+    BACKEND_URL: "http://localhost:8000",
     // How long a cached Summary / Sample Q&A / translated-Read response
     // stays valid before it's treated as stale and regenerated. Keyed by
     // a hash of the page's own content (see hashText()/contentHash()), so
@@ -53,9 +54,7 @@
     // content that never changes on its own. Bump this down if you want
     // fresher content sooner; the widget re-hashes and re-fetches on its
     // own the instant content_hash changes, well before this TTL hits.
-
-    BACKEND_URL: "https://api.rozzgaar.in", 
- // public backend URL (App Runner / ALB / CloudFront)
+    CACHE_TTL_DAYS: 182, // ~6 months
   };
 
   // ------------------------------------------------------------------
@@ -115,6 +114,31 @@
       );
     } catch (err) {
       // Storage full/unavailable - caching is a nice-to-have, never fatal.
+    }
+  }
+
+  // Remembers the visitor's chosen site language ("hi"/"en") across page
+  // loads/navigations - NOT the same as CACHE_PREFIX above (that caches
+  // translated TEXT; this caches the CHOICE itself). Plain localStorage,
+  // this browser only, no expiry: once picked, a page stays in that
+  // language until the visitor explicitly switches again (gate or the
+  // header toggle), on this page or any other page the widget is on.
+  const LANG_PREF_KEY = "rzg-lang-pref";
+
+  function getSavedLanguagePref() {
+    try {
+      return window.localStorage.getItem(LANG_PREF_KEY);
+    } catch (err) {
+      return null; // localStorage unavailable - just always show the gate
+    }
+  }
+
+  function saveLanguagePref(lang) {
+    try {
+      window.localStorage.setItem(LANG_PREF_KEY, lang);
+    } catch (err) {
+      // Storage full/unavailable - the choice just won't carry over to
+      // other pages; the current page still works fine.
     }
   }
 
@@ -302,14 +326,6 @@
       #rzg-minimizeBtn { transition: background .15s ease, transform .15s ease; }
       #rzg-minimizeBtn:hover { background: rgba(255,255,255,.4) !important; transform: rotate(90deg); }
 
-      #rzg-langHi, #rzg-langEn {
-        transition: background .15s ease, color .15s ease, transform .15s ease, box-shadow .15s ease;
-      }
-      #rzg-langHi:hover, #rzg-langEn:hover {
-        background: #c0392b !important; color: #fff !important;
-        transform: translateY(-1px); box-shadow: 0 4px 10px rgba(192,57,43,0.28);
-      }
-
       #rzg-quickActions button {
         transition: transform .15s ease, box-shadow .15s ease, background .15s ease, opacity .15s ease;
       }
@@ -321,8 +337,6 @@
       #rzg-quickActions button:active { transform: translateY(0) scale(.97); }
       #rzg-quickActions button svg { transition: transform .15s ease; }
       #rzg-quickActions button:hover svg { transform: scale(1.1); }
-
-      #rzg-langHi:active, #rzg-langEn:active { transform: translateY(0) scale(.97); }
 
       @media (max-width: 420px) {
         #rzg-launcher-tip { right: 10px !important; left: 10px !important; width: auto !important; }
@@ -496,6 +510,7 @@
       chooseLangSub: "कृपया अपनी पसंदीदा भाषा चुनें",
       langHiLabel: "हिंदी",
       langEnLabel: "English",
+      settingUp: "आपका सहायक तैयार हो रहा है…",
       launcherTooltip: "रोज़गार सहायक - सवाल पूछें, पेज का सारांश पाएं, और जवाब सुने",
       tipHeading: "मैं यह कर सकता हूँ:",
       tipAsk: "पेज के बारे में सवाल पूछें",
@@ -506,7 +521,7 @@
       welcome: "मैं यहाँ आपकी मदद के लिए हूँ - इस पेज की सामग्री पढ़ने, उसका सारांश देने, या सवाल सुझाने में।",
       readLabel: "पढ़ें", readBusy: "...", readTitle: "इस पेज को सुनें",
       summaryLabel: "सारांश", summaryBusy: "...", summaryTitle: "इस पेज का सारांश सुनें",
-      sampleLabel: "प्रश्न उत्तर", sampleBusy: "...", sampleTitle: "प्रश्न उत्तर सुनें",
+      sampleLabel: "प्रश्नोत्तर", sampleBusy: "...", sampleTitle: "प्रश्न उत्तर सुनें",
       readingNow: "🔊 पेज पढ़ा जा रहा है...",
       nothingToRead: "इस पेज पर पढ़ने के लिए कुछ नहीं मिला।",
       notEnoughForSummary: "सारांश बनाने के लिए इस पेज पर पर्याप्त सामग्री नहीं है।",
@@ -533,6 +548,7 @@
       chooseLangSub: "Please select your preferred language",
       langHiLabel: "हिंदी",
       langEnLabel: "English",
+      settingUp: "Setting up your assistant…",
       launcherTooltip: "Rozzgaar Assistant - ask questions, get page summaries, and hear question answers",
       tipHeading: "Here's what I can do:",
       tipAsk: "Answer questions about this page",
@@ -543,7 +559,7 @@
       welcome: "I am here to help you with the content - read it, summarize it, or suggest questions in your selected language.",
       readLabel: "Read", readBusy: "...", readTitle: "Listen to this page read aloud",
       summaryLabel: "Summary", summaryBusy: "...", summaryTitle: "Listen to a summary of this page",
-      sampleLabel: "Sample Q&A", sampleBusy: "...", sampleTitle: "Listen to sample questions and answers",
+      sampleLabel: "Q&A", sampleBusy: "...", sampleTitle: "Listen to sample questions and answers",
       readingNow: "🔊 Reading the page...",
       nothingToRead: "There's nothing on this page to read yet.",
       notEnoughForSummary: "There isn't enough content on this page to summarize.",
@@ -830,41 +846,135 @@
     if (voice) utterance.voice = voice;
   }
 
-  function speakText(text, language, onStart, onEnd) {
-    const clean = prepareForSpeech(text);
-    if (!clean || !("speechSynthesis" in window)) {
-      if (onEnd) onEnd();
-      return;
+  // Chrome (and a few other engines) has a long-standing bug where a
+  // SINGLE long SpeechSynthesisUtterance silently stops partway through -
+  // typically somewhere around 200-300 words / ~15s in - and never fires
+  // onend, it just goes quiet
+  // (https://bugs.chromium.org/p/chromium/issues/detail?id=679437). It's
+  // most visible reading a full module/page aloud, and worse on Hindi
+  // than English since Devanagari synthesis runs slower per character, so
+  // a Hindi utterance hits that ~15s wall on noticeably less text. Two
+  // independent guards fix this:
+  //   1. Long text is split into small, sentence-respecting chunks and
+  //      queued as SEPARATE utterances - every speak() call resets the
+  //      engine's internal timer, so no single utterance is ever long
+  //      enough to trip the bug.
+  //   2. While anything is queued/speaking, a periodic pause()+resume()
+  //      "kick" keeps the underlying engine from silently going idle -
+  //      this is the standard community workaround for the same bug, kept
+  //      as a second line of defense in case an unusually long single
+  //      sentence still slips past the chunk cap below.
+  const SPEECH_CHUNK_MAX_CHARS = 200;
+  const SPEECH_KEEPALIVE_MS = 8000;
+
+  // Splits cleaned (already prepareForSpeech'd) text into chunks no
+  // longer than SPEECH_CHUNK_MAX_CHARS, preferring to break on sentence
+  // boundaries so each chunk still sounds natural. "।" is the
+  // Hindi/Devanagari danda (sentence-ending punctuation); ".", "!", "?"
+  // cover English and the Latin punctuation that's common even in Hindi
+  // course content (numbers, English terms, etc).
+  function splitForSpeech(text) {
+    const clean = (text || "").trim();
+    if (!clean) return [];
+    const sentences = clean.split(/(?<=[.!?।])\s+/).filter(Boolean);
+    const chunks = [];
+    let current = "";
+    const flush = () => {
+      if (current.trim()) chunks.push(current.trim());
+      current = "";
+    };
+    for (const sentence of sentences) {
+      // A single sentence longer than the cap on its own (long
+      // unpunctuated line, run-on content) still has to be split further
+      // so nothing sent to the engine ever exceeds the cap.
+      const words = sentence.length > SPEECH_CHUNK_MAX_CHARS ? sentence.split(/\s+/) : [sentence];
+      for (const word of words) {
+        const next = current ? `${current} ${word}` : word;
+        if (current && next.length > SPEECH_CHUNK_MAX_CHARS) {
+          flush();
+          current = word;
+        } else {
+          current = next;
+        }
+      }
     }
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(clean);
-    applySpeechLang(utterance, language);
-    if (onStart) utterance.onstart = onStart;
-    if (onEnd) {
-      utterance.onend = onEnd;
-      utterance.onerror = onEnd;
-    }
-    window.speechSynthesis.speak(utterance);
+    flush();
+    return chunks;
   }
 
+  let _speechKeepAliveTimer = null;
+  function startSpeechKeepAlive() {
+    stopSpeechKeepAlive();
+    _speechKeepAliveTimer = setInterval(() => {
+      if (!("speechSynthesis" in window)) return;
+      // Only kick while actually mid-utterance and not deliberately
+      // paused by something else - kicking an idle engine can itself
+      // start it speaking queued silence in some browsers.
+      if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+        window.speechSynthesis.pause();
+        window.speechSynthesis.resume();
+      }
+    }, SPEECH_KEEPALIVE_MS);
+  }
+  function stopSpeechKeepAlive() {
+    if (_speechKeepAliveTimer) {
+      clearInterval(_speechKeepAliveTimer);
+      _speechKeepAliveTimer = null;
+    }
+  }
+
+  // Every place in the widget that stops speech should go through this,
+  // not a raw speechSynthesis.cancel() - otherwise the keep-alive
+  // interval above keeps firing pause()/resume() against an engine that
+  // has nothing left queued, which can itself cause odd stalls.
+  function cancelSpeech() {
+    stopSpeechKeepAlive();
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  }
+
+  function speakText(text, language, onStart, onEnd) {
+    speakQueue([text], language, onStart, onEnd);
+  }
+
+  // Speaks one or more texts back-to-back as a single logical utterance
+  // queue. Every input string is cleaned (prepareForSpeech) AND split
+  // into engine-safe chunks (splitForSpeech) before being queued - so a
+  // caller handing this one giant page's worth of text (Read) and a
+  // caller handing it several short strings (Sample Q&A) both end up
+  // going through identical chunking, and the long-utterance cutoff bug
+  // described above can't reappear either way. onStart fires once, for
+  // the very first chunk; onEnd fires once, after the very last chunk
+  // finishes (or errors).
   function speakQueue(texts, language, onStart, onEnd) {
     if (!("speechSynthesis" in window)) {
       if (onEnd) onEnd();
       return;
     }
-    window.speechSynthesis.cancel();
-    const items = (texts || []).map(prepareForSpeech).filter(Boolean);
-    if (!items.length) {
+    cancelSpeech();
+    const chunks = [];
+    (texts || []).forEach((raw) => {
+      const cleaned = prepareForSpeech(raw);
+      if (cleaned) chunks.push(...splitForSpeech(cleaned));
+    });
+    if (!chunks.length) {
       if (onEnd) onEnd();
       return;
     }
-    items.forEach((t, i) => {
-      const utterance = new SpeechSynthesisUtterance(t);
+    const finish = () => { stopSpeechKeepAlive(); if (onEnd) onEnd(); };
+    chunks.forEach((chunk, i) => {
+      const utterance = new SpeechSynthesisUtterance(chunk);
       applySpeechLang(utterance, language);
-      if (i === 0 && onStart) utterance.onstart = onStart;
-      if (i === items.length - 1 && onEnd) {
-        utterance.onend = onEnd;
-        utterance.onerror = onEnd;
+      if (i === 0) {
+        utterance.onstart = () => { startSpeechKeepAlive(); if (onStart) onStart(); };
+      }
+      if (i === chunks.length - 1) {
+        utterance.onend = finish;
+        utterance.onerror = finish;
+      } else {
+        // A mid-queue error shouldn't kill onEnd/the keep-alive early -
+        // the browser moves on to the next queued utterance regardless,
+        // so just let it continue silently for this one chunk.
+        utterance.onerror = () => {};
       }
       window.speechSynthesis.speak(utterance);
     });
@@ -882,7 +992,7 @@
       );
     });
     el.addEventListener("mouseleave", () => {
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      cancelSpeech();
       el.classList.remove("rzg-speaking");
     });
   }
@@ -992,12 +1102,20 @@
            /is page ko (summarize|summary)/i.test(msg);
   }
   // "video" explicitly named alongside a summarize verb - e.g. "summarize
-  // the video", "video ka summary do". A bare "summarize this" while the
-  // video tab happens to be open stays on the existing text-summary path
-  // (isSummarizeIntent above) rather than guessing at intent from tab
-  // state alone - only an explicit mention of "video" routes here.
+  // the video", "video ka summary do" - always routes here. A bare
+  // "summarize this" / "summary" with no explicit mention now ALSO routes
+  // here whenever the video tab is the one currently open (mirroring the
+  // Summary quick-action button's own isVideoTabActive() check just below -
+  // typing "summary" and clicking the Summary button should never behave
+  // differently for the same page state). Only follows the tab, though,
+  // when there's an actual video to summarize (getActiveVideoUrl()) - if
+  // the tab claims active but has no real source, staying on the text path
+  // (or letting handleSummarizeIntent run) is safer than throwing a "no
+  // video found" error out of a bare, ambiguous "summary".
   function isVideoSummarizeIntent(msg) {
-    return isSummarizeIntent(msg) && /\bvideo\b/i.test(msg);
+    if (!isSummarizeIntent(msg)) return false;
+    if (/\bvideo\b/i.test(msg)) return true;
+    return isVideoTabActive() && !!getActiveVideoUrl();
   }
 
   async function handleSummarizeIntent(userMessage, language) {
@@ -1124,7 +1242,7 @@
       );
     });
     launcher.addEventListener("mouseleave", () => {
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      cancelSpeech();
       launcher.classList.remove("rzg-speaking");
     });
 
@@ -1147,18 +1265,10 @@
             <span style="width:6px;height:6px;border-radius:50%;background:#6EE7B7;display:inline-block;box-shadow:0 0 0 2px rgba(110,231,183,0.25);"></span>Online
           </div>
         </div>
-        <button type="button" id="rzg-langSwitchBtn" title="Switch language"
-                style="display:none; background:rgba(255,255,255,.22); border:none; color:#fff; border-radius:12px; padding:5px 10px; cursor:pointer; font-size:11.5px; font-weight:700; font-family:inherit; flex-shrink:0; white-space:nowrap;"></button>
+        <button type="button" id="rzg-langToggle" title="Switch language" aria-label="Switch language"
+                style="display:none; background:rgba(255,255,255,.22); border:none; color:#fff; padding:0 10px; height:28px; border-radius:14px; cursor:pointer; font-size:11.5px; font-weight:700; font-family:inherit; flex-shrink:0;"></button>
         <button type="button" id="rzg-minimizeBtn" title="छोटा करें" aria-label="छोटा करें"
                 style="background:rgba(255,255,255,.22); border:none; color:#fff; width:28px; height:28px; border-radius:50%; cursor:pointer; font-size:16px; line-height:1; flex-shrink:0;">−</button>
-      </div>
-      <div id="rzg-langGate" style="padding:26px 20px 26px; background:#F5F1EC; text-align:center;">
-        <div style="font-weight:600; font-size:15px; color:#292524; margin-bottom:3px; font-family:'Varela Round',-apple-system,sans-serif;">भाषा चुनें / Choose language</div>
-        <div style="font-size:12px; color:#8a8078; margin-bottom:18px;">कृपया अपनी पसंदीदा भाषा चुनें / Please select your preferred language</div>
-        <div style="display:flex; gap:10px; justify-content:center;">
-          <button type="button" id="rzg-langHi" style="flex:1; max-width:140px; background:linear-gradient(135deg,#FFF7F5,#FDEBE6); border:1.5px solid #c0392b; color:#c0392b; border-radius:14px; padding:13px 8px; font-size:14px; font-weight:700; letter-spacing:.2px; cursor:pointer; font-family:inherit; box-shadow:0 3px 8px rgba(192,57,43,.10);">हिंदी</button>
-          <button type="button" id="rzg-langEn" style="flex:1; max-width:140px; background:linear-gradient(135deg,#FFF7F5,#FDEBE6); border:1.5px solid #c0392b; color:#c0392b; border-radius:14px; padding:13px 8px; font-size:14px; font-weight:700; letter-spacing:.2px; cursor:pointer; font-family:inherit; box-shadow:0 3px 8px rgba(192,57,43,.10);">English</button>
-        </div>
       </div>
       <div id="rzg-quickActions" style="display:none; gap:8px; padding:12px 12px 0; background:#F5F1EC;">
         <button type="button" id="rzg-btnRead" title="Listen to this page read aloud"
@@ -1194,7 +1304,7 @@
     document.body.appendChild(wrap);
 
     function closeWidget() {
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      cancelSpeech();
       wrap.classList.remove("rzg-open");
       launcher.style.display = "flex";
       hideLauncherTip();
@@ -1217,9 +1327,7 @@
     const form = wrap.querySelector("#rzg-inputBar");
     const input = wrap.querySelector("#rzg-input");
     const micBtn = wrap.querySelector("#rzg-micBtn");
-    const langGate = wrap.querySelector("#rzg-langGate");
     const quickActions = wrap.querySelector("#rzg-quickActions");
-    const langSwitchBtn = wrap.querySelector("#rzg-langSwitchBtn");
 
     // The session's chosen content/UI language ("hi" or "en") - null until
     // the user picks one on the language gate, lives only in memory for
@@ -1229,6 +1337,14 @@
     // so replies stay in whatever the user picked no matter what
     // language the page itself happens to be written in.
     let sessionLanguage = null;
+    // The language the SURROUNDING PAGE's own text is currently rendered
+    // in - separate from sessionLanguage above. Picking a language on the
+    // gate only sets sessionLanguage (the chat starts talking in that
+    // language right away); it deliberately does NOT touch the page
+    // itself. The page stays exactly as authored (English) until the
+    // visitor explicitly taps the header toggle - THAT is the one action
+    // that translates the page, and pageLang is what tracks/directs it.
+    let pageLang = "en";
     function t(key) {
       return (UI_TEXT[sessionLanguage] || UI_TEXT.hi)[key];
     }
@@ -1269,7 +1385,19 @@
       // (renderLauncherTip always redraws it from UI_TEXT) - wasted work
       // that can also flash mismatched text in between.
       "#rzg-chat-widget", "#rzg-launcher", "#rzg-launcher-tip",
-      "input", "textarea", "select", "option", "[contenteditable]",
+      "input", "textarea", "select", "option",
+      // NOTE: only a TRULY editable region is skipped here - i.e.
+      // contenteditable="true" or the bare attribute (contenteditable=""
+      // also means true per the HTML spec). A plain "[contenteditable]"
+      // selector matches the attribute's PRESENCE regardless of value, so
+      // it was also catching contenteditable="false" wrappers - a very
+      // common pattern for CMS/rich-text-editor rendered content (the same
+      // editor component renders its read-only "viewer" mode by re-using
+      // its editable container with editing turned off via this attribute).
+      // A course lesson body rendered that way was being treated as a live
+      // form field and skipped entirely, silently leaving all of its text
+      // untranslated while the rest of the page translated fine.
+      "[contenteditable='true']", "[contenteditable='']",
     ].join(",");
 
     // A handful of common attributes carry user-visible text of their own
@@ -1388,13 +1516,37 @@
       return batches;
     }
 
+    // Per-node/attribute translation cache: EVERY individual text value is
+    // cached on its own, keyed only by (that exact text, target language) -
+    // not by which node it came from, and not bundled into one big
+    // whole-page array the way earlier versions of this file did. This is
+    // what makes "click the toggle -> whole page flips instantly" actually
+    // true in practice: any text the browser has already translated before
+    // (an earlier toggle, an earlier page, a background warm-up while the
+    // visitor was still reading, even a repeated UI string like "Submit"
+    // appearing in ten different places) applies straight from
+    // localStorage with ZERO network round trips. Only text that is
+    // genuinely new to this browser ever has to ask the backend.
+    function nodeCacheKey(text, targetLang) {
+      return contentHash(text, "node-translate", targetLang);
+    }
+
     // One batched call to the backend (see app/routers/translate.py ->
-    // llm.translate_batch): sends each target's raw text as its own array
-    // item and gets back the same-length array of translations, index for
-    // index - so result[i] is guaranteed to belong to targets[i] and can
-    // be written straight back in place via that target's own setter
+    // llm.translate_batch, which itself calls the FREE Google Translate
+    // web endpoint via the deep-translator package - no API key, no
+    // billing): sends each target's raw text as its own array item and
+    // gets back the same-length array of translations, index for index -
+    // so result[i] is guaranteed to belong to targets[i] and can be
+    // written straight back in place via that target's own setter
     // (node.nodeValue for text nodes, el.setAttribute for attributes).
-    async function translateTargetBatch(targets, targetLang) {
+    //
+    // `apply` controls whether results are actually written to the live
+    // DOM (the normal toggle-click path) or only fetched-and-cached
+    // (the background warm-up path - see prefetchTranslation() below).
+    // Either way every result is written into the per-node cache above,
+    // so a background warm-up pays the network cost once, in idle time,
+    // and the eventual real toggle click just replays it from cache.
+    async function translateTargetBatch(targets, targetLang, apply = true) {
       const texts = targets.map((t) => t.text);
       const res = await fetch(`${CONFIG.BACKEND_URL}/translate/batch`, {
         method: "POST",
@@ -1409,7 +1561,13 @@
       }
       targets.forEach((target, i) => {
         const value = translated[i];
-        if (typeof value === "string" && value.trim()) target.set(value);
+        // The real translation, or the original text if the backend gave
+        // nothing usable for this particular item - either way this is
+        // what actually "counts" as this target's result.
+        const finalValue = (typeof value === "string" && value.trim()) ? value : target.text;
+        if (apply) target.set(finalValue);
+        target.translated = finalValue;
+        cacheSet(nodeCacheKey(target.text, targetLang), finalValue);
       });
     }
 
@@ -1418,10 +1576,7 @@
     // translatable attribute (title/placeholder/alt/aria-label) across the
     // WHOLE page and swaps ONLY each one's text in place, so every button,
     // link, form, and the layout around them is left exactly as it was -
-    // nothing gets rebuilt into plain paragraphs. Cached client-side by a
-    // hash of the page's ORIGINAL text (in DOM order) plus target language,
-    // so re-picking the same language twice in a row doesn't re-hit the
-    // backend.
+    // nothing gets rebuilt into plain paragraphs.
     //
     // Every target's `text` below is always the node/attribute's ORIGINAL
     // value (see getOriginalNodeText/getOriginalAttrValue above), captured
@@ -1431,7 +1586,23 @@
     // (possibly already-Hindi) text, and translating "Hindi -> en" would
     // hit the backend's intentional English-is-a-no-op shortcut and hand
     // the same Hindi text right back, leaving the page silently stuck.
-    async function translateWebsiteContent(targetLang) {
+    //
+    // `apply`: true (the default, used for a real toggle click) writes
+    // every result straight to the live DOM. false (used by
+    // prefetchTranslation()/background warm-up below) only fetches and
+    // populates the per-node cache, touching nothing on screen - so the
+    // page keeps showing its current language while the NEXT real toggle
+    // click gets to apply everything from cache instead of the network.
+    //
+    // Each target is looked up individually in the per-node cache
+    // (nodeCacheKey, see translateTargetBatch above) BEFORE anything is
+    // sent to the backend - so a toggle click on a page that was warmed in
+    // the background, or on text the visitor has already seen translated
+    // on an earlier page, applies with NO network round trip at all: every
+    // target resolves from cache and the whole page flips in one
+    // synchronous pass. Only genuinely-new text (a freshly loaded chapter,
+    // wording nobody has seen yet) is ever sent to /translate/batch.
+    async function translateWebsiteContent(targetLang, { apply = true } = {}) {
       const root = document.body;
       const nodes = collectTranslatableTextNodes(root);
       const attrs = collectTranslatableAttrs(root);
@@ -1446,93 +1617,198 @@
 
       // "Back to English" is always a restore of the real source text, not
       // a translation call - the source IS English, so there's nothing for
-      // the backend to do, and asking it to "translate" already-translated
-      // DOM text is exactly the bug this whole original-text-capture setup
-      // avoids. This also means switching back to English is instant and
-      // never fails due to a network/Google Translate hiccup.
+      // the backend to do. This also means switching back to English is
+      // instant and never fails due to a network/Google Translate hiccup.
       if (targetLang === "en") {
-        targets.forEach((target) => target.set(target.text));
+        if (apply) targets.forEach((target) => target.set(target.text));
         return;
       }
 
-      const hash = contentHash(targets.map((t) => t.text).join("\u241F"), "page-translate-nodes", targetLang);
-      const cached = cacheGet(hash);
-      if (cached && Array.isArray(cached) && cached.length === targets.length) {
-        targets.forEach((target, i) => {
-          const value = cached[i];
-          if (typeof value === "string" && value.trim()) target.set(value);
+      const toFetch = [];
+      targets.forEach((target) => {
+        const cached = cacheGet(nodeCacheKey(target.text, targetLang));
+        if (cached) {
+          if (apply) target.set(cached);
+          target.translated = cached;
+        } else {
+          toFetch.push(target);
+        }
+      });
+      if (!toFetch.length) return; // everything already warm - fully instant, no network at all
+
+      const batches = chunkTargetsForTranslation(toFetch);
+      await Promise.all(batches.map((batch) => translateTargetBatch(batch, targetLang, apply)));
+    }
+
+    // Warms the per-node cache for `targetLang` WITHOUT touching the live
+    // page - fire-and-forget, meant to run while the browser is idle and
+    // the visitor hasn't asked for anything yet. English needs no warm-up
+    // (it's always an instant local restore - see the "en" branch above),
+    // so this is only ever used for "hi".
+    function prefetchTranslation(targetLang) {
+      if (!targetLang || targetLang === "en") return;
+      translateWebsiteContent(targetLang, { apply: false }).catch((err) => {
+        console.warn("Background translation warm-up failed:", err);
+      });
+    }
+
+    function idleTask(fn) {
+      if ("requestIdleCallback" in window) {
+        window.requestIdleCallback(fn, { timeout: 2000 });
+      } else {
+        setTimeout(fn, 300);
+      }
+    }
+
+    // translateWebsiteContent() walks the WHOLE page every time it runs,
+    // but thanks to the per-node cache (see nodeCacheKey/translateTargetBatch
+    // above) re-walking is cheap: anything already translated resolves
+    // straight from cache, so only genuinely new text is ever sent to the
+    // backend. A course-content page is not static, though: the lesson
+    // body for the current chapter is commonly fetched/rendered
+    // client-side (slow first load, "Prev/Next Chapter" navigation, the
+    // Study/Video tab switcher) - any of that can inject brand-new text
+    // nodes/attrs into the page well after the visitor already toggled (or
+    // before they've toggled at all). This observer catches exactly that:
+    //
+    //   - if the page is CURRENTLY showing Hindi, it re-applies live so
+    //     the new chapter text doesn't silently stay in English;
+    //   - if the page is CURRENTLY showing English (visitor hasn't
+    //     toggled yet, or toggled back), it keeps the Hindi cache warm in
+    //     the background instead - so whenever they DO hit the toggle,
+    //     this newly-arrived content is already sitting in cache too and
+    //     the whole page (old content + new chapter) flips instantly
+    //     together, rather than the new part lagging behind on a fresh
+    //     network round trip.
+    let _pendingContentSync = null;
+
+    function scheduleContentSync() {
+      if (_pendingContentSync) clearTimeout(_pendingContentSync);
+      // Debounced: a chapter swap or tab switch can touch many nodes in a
+      // single burst - wait for things to settle before scanning once,
+      // rather than firing a translate call per mutation.
+      _pendingContentSync = setTimeout(() => {
+        _pendingContentSync = null;
+        const liveHindi = pageLang === "hi";
+        translateWebsiteContent("hi", { apply: liveHindi }).catch((err) => {
+          console.warn("Background page translation sync failed:", err);
         });
-        return;
+      }, 500);
+    }
+
+    // childList/subtree only (no attributes/characterData) - our own
+    // translation swaps are node.nodeValue and el.setAttribute() writes,
+    // which this deliberately does NOT observe, so applying a translation
+    // never re-triggers itself in a loop. Real new content (a freshly
+    // rendered chapter, a tab panel swap) always shows up as added child
+    // nodes, which this does catch.
+    const pageContentObserver = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === "childList" && (m.addedNodes.length || m.removedNodes.length)) {
+          scheduleContentSync();
+          break;
+        }
       }
+    });
+    pageContentObserver.observe(document.body, { childList: true, subtree: true });
 
-      const batches = chunkTargetsForTranslation(targets);
-      await Promise.all(batches.map((batch) => translateTargetBatch(batch, targetLang)));
-      cacheSet(hash, targets.map((t) => t.text));
-    }
+    // First warm-up pass: as soon as the browser is idle after load (well
+    // before the visitor necessarily touches the toggle), start caching
+    // the Hindi translation of whatever's on the page right now. This is
+    // the main reason the toggle click below can feel instant instead of
+    // "wait a few seconds while it fetches" - by the time they click, the
+    // fetch has very likely already happened in the background.
+    idleTask(() => prefetchTranslation("hi"));
 
-    // Shows/labels the header language-switch button with the language
-    // you'd switch TO (the opposite of whatever's active now), and reveals
-    // it once a language has been chosen at least once. This is the only
-    // way to change language again after the initial langGate closes -
-    // without it, picking Hindi first left no way back to English at all.
-    function updateLangSwitchBtn() {
-      const other = sessionLanguage === "hi" ? "en" : "hi";
-      langSwitchBtn.textContent = other === "hi" ? "हिंदी" : "English";
-      langSwitchBtn.title = other === "hi" ? "हिंदी में बदलें" : "Switch to English";
-      langSwitchBtn.style.display = "inline-block";
-    }
-
-    // Finishes bringing up the chatbot itself once the site-wide
-    // translation step (or its failure) has been resolved - dismisses the
-    // langGate, reveals the quick actions/log/input, and starts the
-    // conversation in the chosen language. Also handles being called again
-    // later (from the header switch button, not just the initial gate): on
-    // a re-selection the chat is already running, so only the chrome text
-    // and the switch button's own label are refreshed - no second welcome
-    // message and no re-hiding/re-showing of anything already visible.
+    // Finishes bringing up the chatbot itself - reveals the quick
+    // actions/log/input, and starts the conversation in whichever
+    // language is now active.
     function proceedWithLanguage(lang) {
-      const isFirstSelection = sessionLanguage === null;
       sessionLanguage = lang;
-      langGate.style.display = "none";
       quickActions.style.display = "flex";
       log.style.display = "flex";
       form.style.display = "flex";
       applyLanguageToChrome();
-      updateLangSwitchBtn();
-      if (isFirstSelection) addMessage(t("welcome"), "bot");
+      addMessage(t("welcome"), "bot");
     }
 
-    // Entry point for the langGate buttons AND the header switch button:
-    // picking hi/en here first converts the actual Rozzgaar page the
-    // widget is sitting on into that language, and only THEN brings the
-    // chatbot itself up (or refreshes it) running in that language - so
-    // the site and the bot always end up in sync.
-    async function selectLanguage(lang) {
-      const langHiBtn = wrap.querySelector("#rzg-langHi");
-      const langEnBtn = wrap.querySelector("#rzg-langEn");
-      langHiBtn.disabled = true;
-      langEnBtn.disabled = true;
-      langSwitchBtn.disabled = true;
-      const clickedBtn = lang === "hi" ? langHiBtn : langEnBtn;
-      const originalLabel = clickedBtn.textContent;
-      clickedBtn.textContent = lang === "hi" ? "अनुवाद हो रहा है..." : "Translating...";
+    const langToggleBtn = wrap.querySelector("#rzg-langToggle");
 
+    // Reveals the header toggle once a language is active, labelled
+    // with whatever it would switch TO ("English" while the site is in
+    // Hindi, "हिंदी" while it's in English) so a single tap always
+    // flips it.
+    function updateLangToggle(lang) {
+      langToggleBtn.style.display = "inline-block";
+      langToggleBtn.textContent = lang === "hi" ? UI_TEXT.en.langEnLabel : UI_TEXT.hi.langHiLabel;
+    }
+
+    // Translates the WHOLE page into `lang` - cached on BOTH sides so
+    // repeat visits/pages are instant and never re-hit Google Translate
+    // for text already translated once:
+    //   - client-side: cacheGet/cacheSet above (localStorage, this
+    //     browser only)
+    //   - server-side: app/services/llm.py's disk-backed cache
+    //     (_disk_cached / translate_batch's per-item cache in
+    //     data/llm_response_cache.json), shared by every visitor who
+    //     hits this backend, and persists across restarts/redeploys
+    // - then remembers the choice (LANG_PREF_KEY) so it carries over to
+    // every OTHER page on the site until explicitly changed again.
+    async function translateAndPersist(lang) {
       try {
         await translateWebsiteContent(lang);
       } catch (err) {
-        console.warn("Site-wide translation failed, starting the chatbot anyway:", err);
+        console.warn("Site-wide translation failed:", err);
       } finally {
-        clickedBtn.textContent = originalLabel;
-        langHiBtn.disabled = false;
-        langEnBtn.disabled = false;
-        langSwitchBtn.disabled = false;
-        proceedWithLanguage(lang);
+        saveLanguagePref(lang);
+        updateLangToggle(lang);
       }
     }
 
-    wrap.querySelector("#rzg-langHi").addEventListener("click", () => selectLanguage("hi"));
-    wrap.querySelector("#rzg-langEn").addEventListener("click", () => selectLanguage("en"));
-    langSwitchBtn.addEventListener("click", () => selectLanguage(sessionLanguage === "hi" ? "en" : "hi"));
+    // The persistent header toggle - the ONLY way the visitor ever
+    // does NOT re-add the welcome message or auto-read the page again
+    // (that would be noisy on every toggle) - it just translates the
+    // current page and updates the saved preference for every other
+    // page. THIS is the one place page translation actually happens -
+    // toggles off pageLang (what the page is currently rendered in), not
+    // sessionLanguage, since a visitor's chosen chat language and the
+    // page's own translation state are independent until they tap this.
+    // Also brings sessionLanguage in line with the page so the chat's
+    // replies match whatever the page now shows.
+    let headerToggleInProgress = false;
+    langToggleBtn.addEventListener("click", async () => {
+      if (headerToggleInProgress) return;
+      headerToggleInProgress = true;
+      const nextLang = pageLang === "hi" ? "en" : "hi";
+      langToggleBtn.disabled = true;
+      // Thanks to the per-node cache + background warm-up above, this
+      // usually resolves in well under a beat - so only bother dimming
+      // the button if it's genuinely still working after 150ms (e.g. a
+      // brand-new chapter just loaded and hasn't been prefetched yet).
+      // Fast, warm toggles never show this at all; translateAndPersist's
+      // own finally{} already sets the correct final label either way.
+      const busyStateTimer = setTimeout(() => {
+        langToggleBtn.style.opacity = "0.6";
+      }, 150);
+      await translateAndPersist(nextLang);
+      clearTimeout(busyStateTimer);
+      pageLang = nextLang;
+      sessionLanguage = nextLang;
+      applyLanguageToChrome();
+      langToggleBtn.disabled = false;
+      langToggleBtn.style.opacity = "1";
+      headerToggleInProgress = false;
+    });
+
+    // No language picker anymore - start straight in the chat, in
+    // whatever language this visitor last chose via the header toggle
+    // (or English by default for a brand-new visitor). The surrounding
+    // page itself always starts as-authored (English) and only ever
+    // changes when the visitor explicitly taps the header toggle above.
+    const savedLang = getSavedLanguagePref();
+    const initialLang = (savedLang === "hi" || savedLang === "en") ? savedLang : "en";
+    proceedWithLanguage(initialLang);
+    updateLangToggle(pageLang);
 
     function addMessage(text, who) {
       const row = document.createElement("div");
@@ -1644,13 +1920,15 @@
       attachHoverToSpeak(botDiv, farewell, sessionLanguage);
 
       if ("speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(farewell);
-        if (sessionLanguage && sessionLanguage !== "auto") utterance.lang = sessionLanguage;
-        utterance.onstart = () => botDiv.classList.add("rzg-speaking");
-        utterance.onend = () => { botDiv.classList.remove("rzg-speaking"); wrap.__rzgClose(); };
-        utterance.onerror = () => { botDiv.classList.remove("rzg-speaking"); wrap.__rzgClose(); };
-        window.speechSynthesis.speak(utterance);
+        // Routed through speakText (not a hand-rolled utterance) so this
+        // farewell gets the same BCP-47 language resolution, chunking,
+        // and keep-alive handling as every other spoken reply.
+        speakText(
+          farewell,
+          sessionLanguage,
+          () => botDiv.classList.add("rzg-speaking"),
+          () => { botDiv.classList.remove("rzg-speaking"); wrap.__rzgClose(); }
+        );
         setTimeout(() => wrap.__rzgClose(), 6000);
       } else {
         setTimeout(() => wrap.__rzgClose(), 1200);
@@ -1740,8 +2018,10 @@
     const btnSummary = wrap.querySelector("#rzg-btnSummary");
     const btnSample = wrap.querySelector("#rzg-btnSample");
 
-    btnRead.addEventListener("click", withBusyButton(btnRead, "...", "", async () => {
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    // Used by the "Read" button - reads the current page/module aloud
+    // in whatever language is currently active (sessionLanguage).
+    async function readPageAloud() {
+      cancelSpeech();
       const text = extractCurrentModuleText();
       if (!text || text.trim().length < MIN_USEFUL_CONTENT_CHARS) {
         addMessage(t("nothingToRead"), "bot");
@@ -1809,7 +2089,9 @@
           () => readingDiv.classList.remove("rzg-speaking")
         );
       }
-    }));
+    }
+
+    btnRead.addEventListener("click", withBusyButton(btnRead, "...", "", readPageAloud));
 
     btnSummary.addEventListener("click", withBusyButton(btnSummary, "...", "", async () => {
       // Video tab active -> summarize the lecture video itself (its own
@@ -1914,18 +2196,22 @@
       // Shared render path for both a fresh backend result and a cache hit,
       // so the two never drift out of sync.
       function renderSampleResult(result) {
-        addMessage(t("sampleReady"), "bot");
+        const readyDiv = addMessage(t("sampleReady"), "bot");
         addSampleQuestions(result.qaItems, result.language);
         const toSpeak = [];
         result.qaItems.forEach((qa, i) => {
           toSpeak.push(`${i + 1}. ${qa.question}`);
           toSpeak.push(qa.answer);
         });
+        // Glow the resulting chat bubble while it's being read aloud -
+        // same animation Read and Summary use on their own reply bubble,
+        // not the quick-action button itself (that was the mismatch: this
+        // button used to glow for the whole queue instead).
         speakQueue(
           toSpeak,
           result.language,
-          () => btnSample.classList.add("rzg-speaking"),
-          () => btnSample.classList.remove("rzg-speaking")
+          () => readyDiv.classList.add("rzg-speaking"),
+          () => readyDiv.classList.remove("rzg-speaking")
         );
       }
     }));
@@ -2160,7 +2446,7 @@
     }
 
     micBtn.addEventListener("click", () => {
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      cancelSpeech();
       if (isRecording) stopRecording(); else startRecording();
     });
   }
