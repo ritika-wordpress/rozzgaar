@@ -9,7 +9,7 @@ services:
     environment:
       - PORT=8080
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     volumes:
       # Persist the built knowledge base across container restarts/redeploys
       - ./data:/app/data
