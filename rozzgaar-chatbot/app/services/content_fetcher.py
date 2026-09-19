@@ -82,6 +82,29 @@ def fetch_bundle_detail(slug: str) -> dict | None:
     return None
 
 
+# Chapters/lessons only reliably had a "title" pulled out of them before -
+# any actual lesson body (study material text, notes, transcript, etc.)
+# never made it into the knowledge base, which is why a plain question
+# could only ever be answered from whatever page the widget currently had
+# open (live DOM capture) and never from the REST of the course. The API's
+# field name for that body text isn't confirmed, so this tries every
+# reasonably-named key and safely no-ops (falls back to title-only, same
+# as before) if none of them are present.
+_LESSON_BODY_KEYS = (
+    "content", "body", "text", "study_material", "studyMaterial",
+    "notes", "transcript", "html_content", "htmlContent", "material",
+)
+
+
+def _lesson_body(item: dict) -> str:
+    for key in _LESSON_BODY_KEYS:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return BeautifulSoup(value, "html.parser").get_text(separator=" ").strip() \
+                if "<" in value else value.strip()
+    return ""
+
+
 def _course_to_text(detail: dict, contents: dict | None) -> str:
     parts = [
         detail.get("title", ""),
@@ -96,8 +119,14 @@ def _course_to_text(detail: dict, contents: dict | None) -> str:
             parts.append(f"This course has {len(modules)} modules in total.")
         for i, m in enumerate(modules, start=1):
             parts.append(f"Module {i}: {m.get('title', '')}")
+            module_body = _lesson_body(m)
+            if module_body:
+                parts.append(module_body)
             for ch in m.get("chapters", m.get("lessons", [])):
                 parts.append(f"- {ch.get('title', '')}")
+                chapter_body = _lesson_body(ch)
+                if chapter_body:
+                    parts.append(chapter_body)
     return "\n".join(p for p in parts if p)
 
 

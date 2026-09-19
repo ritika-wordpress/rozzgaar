@@ -31,15 +31,23 @@ def _flatten_modules(contents: dict) -> list[dict]:
 
 
 def _module_text(module: dict) -> str:
+    from app.services.content_fetcher import _lesson_body  # local import, avoids a cycle at module load
+
     parts = [module.get("title", "")]
     description = module.get("description") or module.get("summary")
     if description:
         parts.append(description)
+    module_body = _lesson_body(module)
+    if module_body:
+        parts.append(module_body)
     lessons = module.get("chapters", module.get("lessons", []))
     for lesson in lessons:
         title = lesson.get("title")
         if title:
             parts.append(f"- {title}")
+        lesson_body = _lesson_body(lesson)
+        if lesson_body:
+            parts.append(lesson_body)
     return "\n".join(p for p in parts if p)
 
 

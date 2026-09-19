@@ -140,8 +140,14 @@ class KnowledgeBase:
         # Docs are independent Groq calls (when they need one at all), so
         # they're dispatched in parallel rather than one at a time - this
         # is what keeps a full-catalogue refresh from taking N times as
-        # long as translating a single course.
-        with ThreadPoolExecutor(max_workers=min(6, len(items))) as pool:
+        # long as translating a single course. Capped at 2 concurrent
+        # workers (was 6) - each worker can itself fire multiple requests
+        # per doc (llm.translate() chunks long text internally), and
+        # Google Translate's unofficial free-tier limit is ~5 requests/sec,
+        # so anything higher here was reliably tripping "You made too many
+        # requests to the server" and silently falling back to
+        # untranslated text for those chunks.
+        with ThreadPoolExecutor(max_workers=min(2, len(items))) as pool:
             results = list(pool.map(_translate_one, items))
         return dict(results)
 
