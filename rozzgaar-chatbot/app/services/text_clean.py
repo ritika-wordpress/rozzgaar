@@ -46,3 +46,39 @@ def strip_decorative_symbols(text: str) -> str:
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+_MD_RULES = [
+    (re.compile(r"^\s*[-*_=]{3,}\s*$", re.MULTILINE), ""),                 # --- horizontal rules
+    (re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE), ""),                  # # headings
+    (re.compile(r"^\s{0,3}>\s?", re.MULTILINE), ""),                       # > blockquotes
+    (re.compile(r"(\*{1,3}|_{2,3}|~~)(?=\S)(.+?)(?<=\S)\1"), r"\2"),     # **bold** *italic* __bold__ ~~strike~~
+    (re.compile(r"`+([^`]*)`+"), r"\1"),                                   # `code`
+    (re.compile(r"^\s*[-*+\u2022]\s+", re.MULTILINE), ""),                 # - bullets
+    (re.compile(r"\*{2,}"), ""),                                           # any stray ** left over
+]
+
+# A trailing "(120 words)" / "[about 100 words]" / "Word count: 120" note the
+# model sometimes adds to a summary - users shouldn't be told how long the
+# answer is.
+_WORD_COUNT_NOTE_RES = [
+    re.compile(r"\s*[\(\[]\s*(?:about\s+|approximately\s+|approx\.?\s+|~)?\d{1,4}\s*(?:words?|\u0936\u092c\u094d\u0926(?:\u094b\u0902)?)\s*[\)\]]", re.IGNORECASE),
+    re.compile(r"^\s*(?:word\s*count|\u0936\u092c\u094d\u0926\s*\u0938\u0902\u0916\u094d\u092f\u093e)\s*[:\-]\s*\d+.*$", re.IGNORECASE | re.MULTILINE),
+]
+
+
+def clean_reply_text(text: str) -> str:
+    """Final pass for text the LLM writes for the user (chat answers and
+    summaries): removes markdown leftovers (** # --- bullets etc.) and any
+    "(N words)" note, so replies are plain summarised text. Safe on
+    already-clean text and on None/empty strings."""
+    if not text:
+        return text
+    cleaned = text
+    for rx, repl in _MD_RULES:
+        cleaned = rx.sub(repl, cleaned)
+    for rx in _WORD_COUNT_NOTE_RES:
+        cleaned = rx.sub("", cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()

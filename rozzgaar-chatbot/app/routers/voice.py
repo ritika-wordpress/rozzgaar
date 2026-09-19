@@ -39,5 +39,6 @@ async def voice_chat(
         language=chat_result.language,
         sources=chat_result.sources,
         suggested_questions=chat_result.suggested_questions,
+        mcq_questions=chat_result.mcq_questions,
         audio_base64=None,
     )

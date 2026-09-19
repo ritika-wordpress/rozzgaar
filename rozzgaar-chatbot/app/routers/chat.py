@@ -7,7 +7,9 @@ from app.models.schemas import ChatRequest, ChatResponse, QAItem, SourceRef
 from app.routers.module_read import _find_module, _flatten_modules, _module_text
 from app.services import llm
 from app.services.content_fetcher import fetch_course_contents
-from app.services.intent import detect_intent, extract_module_query, extract_summary_word_count
+from app.services.intent import (
+    MAX_QUESTIONS, detect_intent, extract_module_query, extract_question_count, extract_summary_word_count,
+)
 from app.services.knowledge_base import kb
 from app.services.language import resolve_language
 from app.services.reference_resolver import extract_slug_from_url, match_page_url, resolve_reference
@@ -192,7 +194,8 @@ def _handle_summarize(message: str, slug: str | None, live: ResolvedContent | No
     return ChatResponse(reply=summary, language=language, sources=sources, suggested_questions=[])
 
 
-def _handle_suggestions(slug: str | None, live: ResolvedContent | None, chunks, language: str) -> ChatResponse:
+def _handle_suggestions(slug: str | None, live: ResolvedContent | None, chunks, language: str,
+                        requested_count: int | None = None) -> ChatResponse:
     doc = kb.get_full_doc(slug) if slug else None
     if doc:
         context_text, sources = doc.text, [SourceRef(title=doc.title, url=doc.url)]
@@ -202,7 +205,9 @@ def _handle_suggestions(slug: str | None, live: ResolvedContent | None, chunks, 
     else:
         context_text, sources = "\n".join(c.text for c in chunks), []
 
-    qa = llm.generate_suggested_questions(context_text, language, count=4)
+    # "give me 10 mcqs" -> 10 (up to MAX_QUESTIONS); no number -> the usual 4.
+    count = min(requested_count, MAX_QUESTIONS) if requested_count else 4
+    qa = llm.generate_suggested_questions(context_text, language, count=count)
     mcqs = [QAItem(**item) for item in qa if item.get("question")]
 
     # These are multiple-choice now, so they go out as mcq_questions (to
@@ -210,9 +215,18 @@ def _handle_suggestions(slug: str | None, live: ResolvedContent | None, chunks, 
     # Any item the model failed to give usable options for still arrives
     # here with an empty options list, and the widget falls back to
     # showing it as a plain question for that one item.
+    if not mcqs:
+        reply = ("I couldn't create the questions just now - please try again."
+                  if language == "en" else
+                  "अभी प्रश्न नहीं बन पाए - कृपया फिर से कोशिश करें।")
+        return ChatResponse(reply=reply, language=language, sources=sources, suggested_questions=[])
     reply = ("Here are some questions to test yourself on this content:"
               if language == "en" else
               "इस सामग्री पर खुद को परखने के लिए यहाँ कुछ प्रश्न हैं:")
+    if requested_count and requested_count > MAX_QUESTIONS:
+        reply += (f" (one request gives at most {MAX_QUESTIONS} questions)"
+                  if language == "en" else
+                  f" (एक बार में अधिकतम {MAX_QUESTIONS} प्रश्न मिलते हैं)")
     return ChatResponse(reply=reply, language=language, sources=sources,
                         suggested_questions=[], mcq_questions=mcqs)
 
@@ -284,7 +298,7 @@ def build_chat_response(
     if intent == "summarize":
         return _handle_summarize(message, slug, live, chunks, language)
     if intent == "suggestions":
-        return _handle_suggestions(slug, live, chunks, language)
+        return _handle_suggestions(slug, live, chunks, language, extract_question_count(message))
 
     # Plain Q&A: prefer chunks scoped to the SAME course as the page the
     # user is on (current_course_slug) over the site-wide `chunks` search -

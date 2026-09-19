@@ -21,6 +21,57 @@ _SUGGEST_RE = re.compile(
 _WORD_COUNT_RE = re.compile(r"(\d{1,4})\s*[-]?\s*words?\b", re.IGNORECASE)
 
 
+# ---- "give me N MCQs" support -------------------------------------------
+# The most MCQs one request will return. Higher asks are clamped (and the
+# reply says so) so a single message can't fan out into a huge, slow LLM job.
+MAX_QUESTIONS = 20
+
+_NUM_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+    "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+    "nineteen": 19, "twenty": 20,
+}
+_COUNT_TARGET = r"(?:m\.?\s?c\.?\s?qs?|questions?|quiz(?:zes)?|multiple[\s-]?choice|\u092a\u094d\u0930\u0936\u094d\u0928|\u0938\u0935\u093e\u0932)"
+# "10 mcqs", "10 multiple choice questions", "ten questions"
+_COUNT_BEFORE_RE = re.compile(
+    rf"(?<![\w.])(\d{{1,3}}|{'|'.join(_NUM_WORDS)})\s*(?:[A-Za-z\-]+\s+){{0,2}}?{_COUNT_TARGET}",
+    re.IGNORECASE,
+)
+# "mcqs: 10", "questions - 5"
+_COUNT_AFTER_RE = re.compile(rf"{_COUNT_TARGET}\s*[:=\-x]\s*(\d{{1,3}})\b", re.IGNORECASE)
+# "chapter 2 questions" is about chapter 2, not a request for 2 questions
+_UNIT_BEFORE_RE = re.compile(
+    r"(?:chapter|module|lesson|unit|page|part|section|class|step|\u0905\u0927\u094d\u092f\u093e\u092f|\u092e\u0949\u0921\u094d\u092f\u0942\u0932|\u092a\u093e\u0920)\s*$",
+    re.IGNORECASE,
+)
+_MCQ_WORD_RE = re.compile(r"\bm\.?\s?c\.?\s?qs?\b|\u090f\u092e\s?\u0938\u0940\s?\u0915\u094d\u092f\u0942|multiple[\s-]?choice|\bquiz\b|\u092c\u0939\u0941\u0935\u093f\u0915\u0932\u094d\u092a\u0940\u092f", re.IGNORECASE)
+_ASK_VERB_RE = re.compile(
+    r"\b(generate|give|create|make|prepare|list|show|need|want|provide|write|send|ask|test|quiz|practice|practise|please|pls)\b"
+    r"|\u0926\u094b|\u0926\u0947\u0902|\u0926\u0940\u091c\u093f\u090f|\u092c\u0928\u093e\u0913|\u091a\u093e\u0939\u093f\u090f",
+    re.IGNORECASE,
+)
+
+
+def extract_question_count(message: str) -> int | None:
+    """How many MCQs/questions the user asked for: '10 mcqs' -> 10,
+    'give me five questions' -> 5, 'mcqs: 8' -> 8. None if no number was
+    given (the caller then uses its normal default)."""
+    for match in _COUNT_BEFORE_RE.finditer(message):
+        if _UNIT_BEFORE_RE.search(message[:match.start()]):
+            continue
+        raw = match.group(1).lower()
+        count = _NUM_WORDS.get(raw) or (int(raw) if raw.isdigit() else None)
+        if count and count >= 1:
+            return count
+    match = _COUNT_AFTER_RE.search(message)
+    if match:
+        count = int(match.group(1))
+        if count >= 1:
+            return count
+    return None
+
+
 def detect_intent(message: str) -> Intent:
     lower = message.lower()
 
@@ -31,6 +82,12 @@ def detect_intent(message: str) -> Intent:
     # this module" would otherwise be misdetected as read_content just for
     # naming the chapter/module, and the suggestion branch would never run.
     if any(w in lower for w in _SUGGEST_WORDS) or _SUGGEST_RE.search(lower):
+        return "suggestions"
+    # "give me 10 mcqs", "5 questions on this", "mcq please" - but not a
+    # plain "what is an MCQ?" (needs a number or a request verb).
+    if _MCQ_WORD_RE.search(lower) and (extract_question_count(message) or _ASK_VERB_RE.search(lower)):
+        return "suggestions"
+    if extract_question_count(message):
         return "suggestions"
     # "read chapter 2", "read this page", "read the about page" all count -
     # a chapter/module number is a bonus signal, not a requirement.

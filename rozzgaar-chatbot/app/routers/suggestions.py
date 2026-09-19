@@ -32,7 +32,7 @@ def suggest_questions(request: Request, payload: SuggestQuestionsRequest) -> Sug
 
     context_text = strip_decorative_symbols(context_text)
     language = resolve_language(payload.language, context_text[:500])
-    qa = llm.generate_suggested_questions(context_text, language, count=payload.count)
+    qa = llm.generate_suggested_questions(context_text, language, count=max(1, min(payload.count, 20)))
 
     return SuggestQuestionsResponse(
         questions=[QAItem(**item) for item in qa],

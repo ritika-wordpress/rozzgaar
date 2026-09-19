@@ -14,7 +14,7 @@ from deep_translator.exceptions import RequestError, TooManyRequests, Translatio
 from groq import Groq
 
 from app.config import settings
-from app.services.text_clean import strip_decorative_symbols
+from app.services.text_clean import clean_reply_text, strip_decorative_symbols
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ def _response_cache_key(namespace: str, *parts: object) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _disk_cached(namespace: str, key_parts: tuple, compute):
+def _disk_cached(namespace: str, key_parts: tuple, compute, is_complete=None):
     """Return the cached value for (namespace, key_parts) if present on
     disk (via the in-memory mirror), otherwise call compute(), persist the
     result, and return it. Safe across threads (single lock around
@@ -183,13 +183,18 @@ def _disk_cached(namespace: str, key_parts: tuple, compute):
     is harmless - it just means one of the two write attempts is what ends
     up persisted."""
     key = _response_cache_key(namespace, *key_parts)
+    # A failed/empty result (or, via is_complete, a short one) is never
+    # kept: caching it would make the same request fail forever, and an
+    # empty entry already sitting in the cache file is treated as a miss.
+    ok = is_complete or bool
     with _RESPONSE_CACHE_LOCK:
         cache = _load_response_cache()
-        if key in cache:
+        if key in cache and ok(cache[key]):
             return cache[key]
     result = compute()
-    with _RESPONSE_CACHE_LOCK:
-        _stage_response_cache_write(key, result)
+    if ok(result):
+        with _RESPONSE_CACHE_LOCK:
+            _stage_response_cache_write(key, result)
     return result
 
 
@@ -271,10 +276,12 @@ def _cached_answer_impl(question: str, context_chunks: tuple[str, ...], language
         f"Reply in {lang_name} - this is the language the user has chosen for the whole session, "
         "regardless of what language the CONTEXT above happens to be written in. Never switch "
         "language to match the CONTEXT's language.\n\n"
-        "Keep answers concise and friendly."
+        "Keep answers short and summarised (a few sentences at most), friendly, and to the point. "
+        "Write plain text only: no markdown, no asterisks, no # headings, no bullet symbols, no tables, "
+        "no horizontal lines, no emojis. Never mention how many words your answer has."
     )
     user = f"CONTEXT:\n{context}\n\nQUESTION: {question}"
-    return strip_decorative_symbols(_complete(system, user))
+    return clean_reply_text(strip_decorative_symbols(_complete(system, user)))
 
 
 def answer_with_context(question: str, context_chunks: list[str], language: str) -> str:
@@ -291,7 +298,7 @@ def answer_with_context(question: str, context_chunks: list[str], language: str)
     # identical question against the identical context is ever reused, so
     # this never mixes up answers across different pages/courses.
     key_parts = (question, tuple(context_chunks), language)
-    return _disk_cached("answer", key_parts, lambda: _cached_answer_impl(question, tuple(context_chunks), language))
+    return clean_reply_text(_disk_cached("answer", key_parts, lambda: _cached_answer_impl(question, tuple(context_chunks), language)))
 
 
 def _word_count_of(text: str) -> int:
@@ -307,7 +314,7 @@ def summarize(text: str, length: str, language: str, title: str | None = None,
     different `text` value, so it's a cache miss and gets summarized fresh
     automatically; the old entry just sits unused."""
     key_parts = (text, length, language, title, word_count)
-    return _disk_cached("summarize", key_parts, lambda: _summarize_impl(text, length, language, title, word_count))
+    return clean_reply_text(_disk_cached("summarize", key_parts, lambda: _summarize_impl(text, length, language, title, word_count)))
 
 
 def _summarize_impl(text: str, length: str, language: str, title: str | None,
@@ -327,14 +334,14 @@ def _summarize_impl(text: str, length: str, language: str, title: str | None,
         low, high = 100, 150
         instruction = (
             f"Write a summary of {low}-{high} words that covers ALL the important concepts, points, "
-            "and takeaways from the content - don't skip any major topic. Use short sentences or "
-            "bullet points, prioritizing completeness within that word range."
+            "and takeaways from the content - don't skip any major topic. Use short plain sentences "
+            "(no bullet symbols), prioritizing completeness within that word range."
         )
     else:
         low, high = 200, 300
         instruction = (
             f"Write a LONG, structured summary ({low}-{high} words) that covers every important "
-            "concept in the content. Use short paragraphs or bullet points covering: what it is, "
+            "concept in the content. Use short plain paragraphs (no bullet symbols) covering: what it is, "
             "who it's for, what's covered (list every major topic/module), and the outcome/benefit."
         )
     system = (
@@ -342,7 +349,9 @@ def _summarize_impl(text: str, length: str, language: str, title: str | None,
         f"faithfully - do not invent facts, prices, or claims not present in the text. Do not be "
         f"overly brief - use the full word range you're given below. Reply in {lang_name} - this "
         "is the language the user chose for this session, regardless of what language the CONTENT "
-        "below is written in. Never switch language to match the CONTENT's language."
+        "below is written in. Never switch language to match the CONTENT's language. "
+        "Write plain text only: no markdown, no asterisks, no # headings, no tables, no horizontal "
+        "lines, no emojis. Never mention or state the word count or length of your summary."
     )
     heading = f"TITLE: {title}\n" if title else ""
     user = f"{heading}CONTENT:\n{text}\n\n{instruction}"
@@ -723,7 +732,8 @@ def generate_suggested_questions(context_text: str, language: str, count: int = 
     # ever changes.
     key_parts = ("mcq-v1", context_text, language, count)
     return _disk_cached("suggested_questions", key_parts,
-                         lambda: _generate_suggested_questions_impl(context_text, language, count))
+                         lambda: _generate_suggested_questions_impl(context_text, language, count),
+                         is_complete=lambda r: bool(r) and len(r) >= count)
 
 
 # How many choices each generated question offers. Four is the usual MCQ
@@ -731,7 +741,42 @@ def generate_suggested_questions(context_text: str, language: str, count: int = 
 _MCQ_OPTION_COUNT = 4
 
 
+# A single LLM call is only reliable up to about this many MCQs (each carries
+# four options + an explanation, and a truncated reply is unparseable JSON).
+# Bigger requests are generated in rounds and merged.
+_MCQ_BATCH_MAX = 8
+_MCQ_BATCH_MAX_NON_EN = 4   # Hindi text uses ~3x the tokens, so smaller batches keep the JSON from being cut off
+_MCQ_MAX_ROUNDS = 8
+
+
 def _generate_suggested_questions_impl(context_text: str, language: str, count: int) -> list[dict]:
+    """Returns `count` MCQs (fewer only if the content genuinely can't yield
+    that many distinct ones). One LLM call for small counts - same as
+    before - and extra rounds, told what's already been written, to reach
+    larger counts or to top up a short reply."""
+    collected: list[dict] = []
+    seen: set[str] = set()
+    for _ in range(_MCQ_MAX_ROUNDS):
+        need = count - len(collected)
+        if need <= 0:
+            break
+        batch_max = _MCQ_BATCH_MAX if language == "en" else _MCQ_BATCH_MAX_NON_EN
+        batch = _generate_mcq_batch(context_text, language, min(need, batch_max),
+                                     tuple(q["question"] for q in collected))
+        added = 0
+        for item in batch:
+            key = " ".join(item["question"].lower().split())
+            if key in seen:
+                continue
+            seen.add(key)
+            collected.append(item)
+            added += 1
+        if not added:
+            break
+    return collected[:count]
+
+
+def _generate_mcq_batch(context_text: str, language: str, count: int, avoid: tuple = ()) -> list[dict]:
     lang_name = _LANG_NAME.get(language, "English")
     system = (
         "You are Saarthi, the Rozzgaar website assistant. Based on the given content, write "
@@ -775,10 +820,15 @@ def _generate_suggested_questions_impl(context_text: str, language: str, count: 
         f"Remember: every one of the {count} items needs its own options array and correct_index, "
         f"written in {lang_name}, even though this instruction is in English."
     )
+    if avoid:
+        user += ("\n\nThese questions were already written - do NOT repeat or rephrase them, "
+                 "cover different points of the content:\n" + "\n".join(f"- {q}" for q in avoid))
+    per_question = 260 if language == "en" else 700
+    mcq_tokens = max(2000, min(6000, count * per_question))
     # Roughly 2.5x the old token budget: each item now carries four
     # options plus an explanation, and a truncated reply is unparseable
     # JSON - i.e. zero questions, not slightly fewer.
-    raw = _complete(system, user, temperature=0.4, max_tokens=2000)
+    raw = _complete(system, user, temperature=0.4, max_tokens=mcq_tokens)
     items = _safe_parse_qa(raw)
 
     # Self-heal: the model sometimes complies with the schema in English
@@ -799,11 +849,32 @@ def _generate_suggested_questions_impl(context_text: str, language: str, count: 
             f"populated options array of exactly {_MCQ_OPTION_COUNT} strings and a correct_index "
             "integer, written in the same target language as everything else."
         )
-        retry_raw = _complete(system, retry_user, temperature=0.4, max_tokens=2000)
+        retry_raw = _complete(system, retry_user, temperature=0.4, max_tokens=mcq_tokens)
         retry_items = _safe_parse_qa(retry_raw)
         if retry_items and any(item["options"] for item in retry_items):
             return retry_items
     return items
+
+
+def _salvage_json_objects(text: str) -> list[dict]:
+    """Pulls the complete {...} objects out of a JSON array that may have
+    been cut off partway through."""
+    start = text.find("[")
+    if start < 0:
+        return []
+    decoder = json.JSONDecoder()
+    i, n, out = start + 1, len(text), []
+    while i < n:
+        while i < n and text[i] in " \t\r\n,":
+            i += 1
+        if i >= n or text[i] != "{":
+            break
+        try:
+            obj, i = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            break
+        out.append(obj)
+    return out
 
 
 def _safe_parse_qa(raw: str) -> list[dict]:
@@ -823,8 +894,14 @@ def _safe_parse_qa(raw: str) -> list[dict]:
     try:
         data = json.loads(cleaned)
     except (json.JSONDecodeError, AttributeError) as exc:
-        logger.warning("Failed to parse suggested-questions JSON: %s | raw=%s", exc, raw[:200])
-        return []
+        # A reply cut off mid-array (token limit) is not a total loss: keep
+        # every question that was completed before the cut.
+        data = _salvage_json_objects(cleaned)
+        if not data:
+            logger.warning("Failed to parse suggested-questions JSON: %s | raw=%s", exc, raw[:200])
+            return []
+        logger.warning("Suggested-questions JSON was truncated/invalid (%s) - recovered %d complete items.",
+                        exc, len(data))
     if not isinstance(data, list):
         return []
 

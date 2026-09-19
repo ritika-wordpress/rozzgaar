@@ -154,6 +154,9 @@ class VoiceChatResponse(BaseModel):
     language: Literal["en", "hi"]
     sources: list[SourceRef] = Field(default_factory=list)
     suggested_questions: list[str] = Field(default_factory=list)
+    # Same MCQ cards the text /chat/ endpoint returns - without this, asking
+    # for questions by voice got only the intro sentence and no questions.
+    mcq_questions: list["QAItem"] = Field(default_factory=list)
     audio_base64: str | None = None
     audio_mime: str = "audio/mpeg"
 
@@ -161,3 +164,4 @@ class VoiceChatResponse(BaseModel):
 # QAItem is defined below ChatResponse, so its forward reference has to
 # be resolved once the whole module is loaded.
 ChatResponse.model_rebuild()
+VoiceChatResponse.model_rebuild()

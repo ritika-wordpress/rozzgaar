@@ -156,63 +156,19 @@
   // as embed.js itself (CONFIG.BACKEND_URL, which main.py already keeps
   // in sync with wherever this backend is actually reachable), so it
   // works in dev and prod without any hardcoded domain.
-  // No `poster` here on purpose: a poster would show the static PNG icon
-  // as a placeholder frame before the video has loaded/started playing,
-  // which is exactly the "icon flashes, then video" effect on page load
-  // that we don't want. Without it the element just stays empty/transparent
-  // until the video itself has a frame to show. The one tradeoff is that if
-  // autoplay is silently blocked (some strict in-app webviews), there's no
-  // fallback frame shown at all - accepted here since avoiding the icon
-  // flash takes priority.
+  // `poster` reuses the existing static PNG so there's a correct-looking
+  // frame the instant the button appears, before the video has actually
+  // loaded/started playing - autoplay can be silently blocked by some
+  // browsers/embeds (e.g. very strict in-app webviews), so the poster
+  // image is also what's shown if the video never plays at all.
   function assistantIconVideo(size) {
     const videoUrl = `${CONFIG.BACKEND_URL}/static/rozzgaar_bot.mp4`;
+    const posterUrl = `data:image/png;base64,${ROZZGAAR_ICON_B64}`;
     return `<video width="${size}" height="${size}" autoplay muted loop playsinline
-              aria-label="Saarthi"
+              poster="${posterUrl}" aria-label="Saarthi"
               style="display:block; object-fit:cover; border-radius:50%; pointer-events:none;">
               <source src="${videoUrl}" type="video/mp4">
             </video>`;
-  }
-
-  // Recorded voiceover greeting for the launcher hover, replacing the old
-  // browser-TTS "cute voice" (speechSynthesis reading the tooltip text
-  // aloud). These are real recorded lines, one per language, served as
-  // static assets the same way the launcher video is - fetched once per
-  // visitor and cached by the browser, not inlined as base64.
-  const LAUNCHER_VO_URLS = {
-    en: `${CONFIG.BACKEND_URL}/static/saarthi_vo_en.mp3`,
-    hi: `${CONFIG.BACKEND_URL}/static/saarthi_vo_hi.mp3`,
-  };
-  // Lazily-created and reused across hovers so a quick re-hover doesn't
-  // spin up a second <audio> element - just restarts the existing one.
-  let _launcherVoAudio = null;
-  let _launcherVoLang = null;
-
-  // `el` is the launcher button - passed in rather than closed over, since
-  // this is defined outside buildWidget() where `launcher` actually lives.
-  function playLauncherVoiceover(el, lang) {
-    const url = LAUNCHER_VO_URLS[lang] || LAUNCHER_VO_URLS.en;
-    if (!_launcherVoAudio || _launcherVoLang !== lang) {
-      if (_launcherVoAudio) _launcherVoAudio.pause();
-      _launcherVoAudio = new Audio(url);
-      _launcherVoLang = lang;
-      _launcherVoAudio.addEventListener("play", () => el.classList.add("rzg-speaking"));
-      _launcherVoAudio.addEventListener("pause", () => el.classList.remove("rzg-speaking"));
-      _launcherVoAudio.addEventListener("ended", () => el.classList.remove("rzg-speaking"));
-    } else {
-      _launcherVoAudio.currentTime = 0;
-    }
-    // Autoplay can be silently blocked (rare, but same caveat as the
-    // muted video above) - failing quietly here just means no sound,
-    // not a broken hover.
-    _launcherVoAudio.play().catch(() => {});
-  }
-
-  function stopLauncherVoiceover(el) {
-    if (_launcherVoAudio) {
-      _launcherVoAudio.pause();
-      _launcherVoAudio.currentTime = 0;
-    }
-    el.classList.remove("rzg-speaking");
   }
 
   function readIconSvg(size) {
@@ -557,7 +513,15 @@
          control - pause/resume whatever is being spoken - which is why
          it shows a speaker icon, not a microphone. The mic that RECORDS
          is #rzg-micBtn in the input bar. */
-      #rzg-headerMicBtn { transition: background .15s ease, color .15s ease; }
+      #rzg-headerMicBtn { position: relative; transition: background .15s ease, color .15s ease; }
+      /* Cross drawn over the speaker while nothing is being spoken
+         (stopped / paused). Hidden again as soon as speech is playing. */
+      #rzg-headerMicBtn .rzg-mic-cross {
+        display: none; position: absolute; top: 50%; left: 50%;
+        width: 18px; height: 18px; margin: -9px 0 0 -9px; pointer-events: none;
+        filter: drop-shadow(0 0 1.5px rgba(255,255,255,.9));
+      }
+      #rzg-headerMicBtn.rzg-header-mic-stopped .rzg-mic-cross { display: block; }
       #rzg-headerMicBtn.rzg-header-mic-speaking {
         background: #fff !important;
         color: #c0392b !important;
@@ -700,6 +664,7 @@
       tipSummary: "पेज का सारांश सुनें",
       tipSample: "बहुविकल्पीय प्रश्न हल करें",
       tipVoice: "बात करें",
+      welcome: "मैं यहाँ आपकी मदद के लिए हूँ - इस पेज की सामग्री पढ़ने, उसका सारांश देने, या सवाल सुझाने में।",
       readLabel: "पढ़ें", readBusy: "...", readTitle: "इस पेज को सुनें",
       summaryLabel: "सारांश", summaryBusy: "...", summaryTitle: "इस पेज का सारांश सुनें",
       sampleLabel: "प्रश्न", sampleBusy: "...", sampleTitle: "इस पेज पर बहुविकल्पीय प्रश्न हल करें",
@@ -741,6 +706,7 @@
       tipSummary: "Summarize the page",
       tipSample: "Practise multiple-choice questions",
       tipVoice: "Talk to me",
+      welcome: "I am here to help you with the content - read it, summarize it, or suggest questions in your selected language.",
       readLabel: "Read", readBusy: "...", readTitle: "Listen to this page read aloud",
       summaryLabel: "Summary", summaryBusy: "...", summaryTitle: "Listen to a summary of this page",
       sampleLabel: "Quiz", sampleBusy: "...", sampleTitle: "Practise multiple-choice questions on this page",
@@ -982,6 +948,9 @@
   function stripMarkdown(text) {
     if (!text) return text;
     return text
+      .replace(/^\s*[-*_=]{3,}\s*$/gm, "")
+      .replace(/^\s{0,3}>\s?/gm, "")
+      .replace(/~~([^~]+)~~/g, "$1")
       .replace(/^#{1,6}\s+/gm, "")
       .replace(/\*{3}([^*]+)\*{3}/g, "$1")
       .replace(/_{3}([^_]+)_{3}/g, "$1")
@@ -992,6 +961,7 @@
       .replace(/`([^`]+)`/g, "$1")
       .replace(/^[-*]\s+/gm, "")
       .replace(/[#*`]/g, "")
+      .replace(/\n{3,}/g, "\n\n")
       .trim();
   }
 
@@ -1164,15 +1134,28 @@
   let _speechPreferFemale = false;
   let _speechOnEnd = null;
   let _speechPaused = false;
+  // Where inside the CURRENT chunk to (re)start speaking. 0 normally; set
+  // on pause so resume continues from the word where it was stopped
+  // instead of replaying the whole chunk (a short chat reply is a single
+  // chunk, so without this "resume" restarted the entire message).
+  let _speechCharOffset = 0;
+  let _utterBase = 0;        // offset (within the chunk) the live utterance started at
+  let _utterText = "";       // text of the live utterance
+  let _utterStartTs = 0;     // when the live utterance actually began (0 = not yet)
+  let _boundaryChar = -1;    // last word-boundary charIndex reported by the engine
+  const _speechCps = {};     // measured chars/second per language+rate, for engines that send no boundary events
 
-  // The launcher's hover used to have its own "cute" voice style (higher
-  // pitch, slightly slower, nudged toward a female-labelled voice) for the
-  // browser-TTS tooltip readout. That's gone now - the launcher hover plays
-  // a recorded voiceover instead (see playLauncherVoiceover above) - so
-  // only the neutral style used for actually reading course content aloud
-  // (Read/Summary/Sample Q&A/chat) remains. SpeechSynthesisUtterance.pitch
+  // Default voice: whatever the browser's chosen voice sounds like
+  // normally. "Cute" voice: a gentler, higher-pitched, slightly slower
+  // character (plus a soft nudge toward a female-labelled voice where
+  // one's available) used for the launcher's hover tooltip so the
+  // mascot sounds sweet rather than robotic - kept separate from the
+  // neutral voice used for actually reading course content aloud
+  // (Read/Summary/Sample Q&A/chat), where a natural, easy-to-follow
+  // voice matters more than personality. SpeechSynthesisUtterance.pitch
   // runs 0-2 (1 = normal) and .rate runs 0.1-10 (1 = normal).
   const VOICE_STYLE_DEFAULT = { pitch: 1, rate: 1, preferFemale: false };
+  const VOICE_STYLE_CUTE = { pitch: 1.45, rate: 0.95, preferFemale: true };
 
   function cancelSpeech() {
     stopSpeechKeepAlive();
@@ -1181,9 +1164,14 @@
     _speechIndex = 0;
     _speechOnEnd = null;
     _speechPaused = false;
+    _speechCharOffset = 0;
     speechOwnerKey = null;
     speechOwnerLang = null;
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  }
+
+  function speakText(text, language, onStart, onEnd, voiceStyle) {
+    speakQueue([text], language, onStart, onEnd, voiceStyle);
   }
 
   // ---- Speech ownership -------------------------------------------------
@@ -1223,6 +1211,7 @@
   function pauseActiveSpeech() {
     if (!("speechSynthesis" in window) || !isSpeechActive() || _speechPaused) return;
     _speechPaused = true;
+    _speechCharOffset = _estimateResumeOffset();
     _speechGen += 1; // invalidate the in-flight utterance's onend/onerror
     stopSpeechKeepAlive();
     window.speechSynthesis.cancel();
@@ -1236,6 +1225,34 @@
     _playSpeechChunk(gen);
   }
 
+  // Best guess of how far into the current chunk speech had got when it
+  // was stopped. Uses the engine's word-boundary events when it sends them
+  // (exact); otherwise estimates from elapsed time x the speaking speed
+  // measured on earlier utterances (Chrome's online voices, Hindi voices
+  // etc. send no boundary events), then backs up a word so nothing is
+  // skipped. Always snaps to the start of a word.
+  function _estimateResumeOffset() {
+    const text = _utterText;
+    if (!text) return _speechCharOffset;
+    let pos = 0;
+    let exact = false;
+    if (_boundaryChar >= 0) {
+      pos = _boundaryChar;
+      exact = true;
+    } else if (_utterStartTs) {
+      const key = `${_speechLang || "auto"}:${_speechRate}`;
+      const cps = _speechCps[key] || ((_speechLang === "hi" ? 11 : 15) * _speechRate);
+      pos = Math.floor(((performance.now() - _utterStartTs) / 1000) * cps);
+    }
+    pos = Math.max(0, Math.min(pos, text.length));
+    while (pos > 0 && !/\s/.test(text[pos - 1])) pos--;      // start of the current word
+    if (!exact) {                                             // estimated: back up one more word
+      while (pos > 0 && /\s/.test(text[pos - 1])) pos--;
+      while (pos > 0 && !/\s/.test(text[pos - 1])) pos--;
+    }
+    return _utterBase + pos;
+  }
+
   function _playSpeechChunk(gen) {
     if (gen !== _speechGen) return; // superseded by a cancel/pause/new queue
     if (_speechIndex >= _speechChunks.length) {
@@ -1243,21 +1260,54 @@
       const done = _speechOnEnd;
       _speechChunks = [];
       _speechOnEnd = null;
+      _speechCharOffset = 0;
       speechOwnerKey = null;
       speechOwnerLang = null;
       if (done) done();
       return;
     }
-    const utterance = new SpeechSynthesisUtterance(_speechChunks[_speechIndex]);
+    const full = _speechChunks[_speechIndex];
+    const startOffset = _speechCharOffset;
+    const text = startOffset > 0 ? full.slice(startOffset).trim() : full;
+    if (!text) { // nothing left of this chunk - move on to the next one
+      _speechCharOffset = 0;
+      _speechIndex += 1;
+      _playSpeechChunk(gen);
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(text);
     applySpeechLang(utterance, _speechLang, _speechPreferFemale);
     utterance.pitch = _speechPitch;
     utterance.rate = _speechRate;
+    _utterBase = startOffset > 0 ? full.length - full.slice(startOffset).trimStart().length : 0;
+    _utterText = text;
+    _utterStartTs = 0;
+    _boundaryChar = -1;
+    utterance.onstart = () => { if (gen === _speechGen) _utterStartTs = performance.now(); };
+    utterance.onboundary = (e) => {
+      if (gen === _speechGen && typeof e.charIndex === "number" && (!e.name || e.name === "word")) {
+        _boundaryChar = e.charIndex;
+      }
+    };
     const advance = () => {
       if (gen !== _speechGen) return;
+      _speechCharOffset = 0;
       _speechIndex += 1;
       _playSpeechChunk(gen);
     };
-    utterance.onend = advance;
+    utterance.onend = () => {
+      // Learn this voice's real speaking speed (chars/sec) for the
+      // time-based resume estimate above.
+      if (gen === _speechGen && _utterStartTs && text.length > 30) {
+        const secs = (performance.now() - _utterStartTs) / 1000;
+        if (secs > 0.8) {
+          const key = `${_speechLang || "auto"}:${_speechRate}`;
+          const measured = text.length / secs;
+          _speechCps[key] = _speechCps[key] ? (_speechCps[key] + measured) / 2 : measured;
+        }
+      }
+      advance();
+    };
     // A chunk erroring out (mid-queue or the last one) shouldn't leave
     // the queue stuck - just move on the same as a normal end.
     utterance.onerror = advance;
@@ -1606,10 +1656,17 @@
       renderLauncherTip(tipT);
       launcher.title = tipT.launcherTooltip;
       launcher.setAttribute("aria-label", tipT.launcherTooltip);
-      playLauncherVoiceover(launcher, lang);
+      speakText(
+        tipT.launcherTooltip,
+        lang,
+        () => launcher.classList.add("rzg-speaking"),
+        () => launcher.classList.remove("rzg-speaking"),
+        VOICE_STYLE_CUTE
+      );
     });
     launcher.addEventListener("mouseleave", () => {
-      stopLauncherVoiceover(launcher);
+      cancelSpeech();
+      launcher.classList.remove("rzg-speaking");
     });
 
     const wrap = document.createElement("div");
@@ -1633,8 +1690,6 @@
         </div>
         <button type="button" id="rzg-langToggle" title="Switch language" aria-label="Switch language"
                 style="display:none; background:rgba(255,255,255,.22); border:none; color:#fff; padding:0 10px; height:28px; border-radius:14px; cursor:pointer; font-size:11.5px; font-weight:700; font-family:inherit; flex-shrink:0;"></button>
-        <button type="button" id="rzg-headerMicBtn" title="Stop speaking" aria-label="Stop speaking"
-                style="display:none; background:rgba(255,255,255,.22); border:none; color:#fff; width:28px; height:28px; border-radius:50%; cursor:pointer; flex-shrink:0; align-items:center; justify-content:center;">${speakerIconSvg(15)}</button>
         <button type="button" id="rzg-minimizeBtn" title="छोटा करें" aria-label="छोटा करें"
                 style="background:rgba(255,255,255,.22); border:none; color:#fff; width:28px; height:28px; border-radius:50%; cursor:pointer; font-size:16px; line-height:1; flex-shrink:0;">−</button>
       </div>
@@ -1662,6 +1717,8 @@
         <button type="submit" style="background:linear-gradient(135deg,#d24a37,#c0392b); color:#fff; border:none; border-radius:50%; width:40px; height:40px; cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center; box-shadow:0 3px 10px rgba(192,57,43,0.35);">${sendIconSvg(16)}</button>
         <button type="button" id="rzg-micBtn" title="Click to talk"
                 style="background:#F1F0EE; color:#57534E; border:1px solid #E7E5E4; border-radius:50%; width:40px; height:40px; cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,.05);">${micIconSvg(17)}</button>
+        <button type="button" id="rzg-headerMicBtn" title="Stop speaking" aria-label="Stop speaking"
+                style="display:none; background:#F1F0EE; color:#57534E; border:1px solid #E7E5E4; border-radius:50%; width:40px; height:40px; cursor:pointer; flex-shrink:0; align-items:center; justify-content:center; box-shadow:0 1px 4px rgba(0,0,0,.05);">${speakerIconSvg(17)}</button>
       </form>`;
 
     injectMicStyles();
@@ -2098,6 +2155,7 @@
       log.style.display = "flex";
       form.style.display = "flex";
       applyLanguageToChrome();
+      addMessage(t("welcome"), "bot");
     }
 
     const langToggleBtn = wrap.querySelector("#rzg-langToggle");
@@ -2201,6 +2259,32 @@
       });
     }
 
+    // Shows bot text one word at a time (like a live typing effect). The
+    // whole text is always what ends up in the bubble - this only changes
+    // how it appears, not what it says. Total reveal time is capped so a
+    // long reply never takes more than a few seconds.
+    function revealWordByWord(el, text) {
+      const tokens = String(text || "").match(/\s*\S+\s*/g) || [];
+      const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (tokens.length <= 1 || reduceMotion) {
+        el.textContent = text;
+        return;
+      }
+      const delay = Math.max(15, Math.min(60, Math.floor(6000 / tokens.length)));
+      const node = document.createTextNode("");
+      el.appendChild(node);
+      let i = 0;
+      const timer = setInterval(() => {
+        if (!el.isConnected || i >= tokens.length) {
+          if (!el.isConnected) node.nodeValue = tokens.join("");
+          clearInterval(timer);
+          return;
+        }
+        node.nodeValue += tokens[i++];
+        log.scrollTop = log.scrollHeight;
+      }, delay);
+    }
+
     function addMessage(text, who) {
       const row = document.createElement("div");
       row.className = "rzg-bubble-row";
@@ -2210,7 +2294,11 @@
       bubble.className = who === "user" ? "rzg-bubble rzg-bubble-user" : "rzg-bubble rzg-bubble-bot";
 
       const textSpan = document.createElement("span");
-      textSpan.textContent = text;
+      if (who === "user") {
+        textSpan.textContent = text;
+      } else {
+        revealWordByWord(textSpan, stripMarkdown(text) || text);
+      }
       bubble.appendChild(textSpan);
 
       const time = document.createElement("span");
@@ -2582,21 +2670,29 @@
     const headerMicBtn = wrap.querySelector("#rzg-headerMicBtn");
     if ("speechSynthesis" in window) {
       headerMicBtn.style.display = "flex";
+      headerMicBtn.insertAdjacentHTML("beforeend",
+        '<svg class="rzg-mic-cross" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+        '<path d="M5 5L19 19M19 5L5 19" stroke="#c0392b" stroke-width="2.6" stroke-linecap="round"/></svg>');
+      // Cross shows only while speech has been stopped (paused) by the
+      // user; clicking the speaker again resumes it and removes the cross.
+      const syncHeaderMic = () => {
+        const active = isSpeechActive() && !isSpeechPaused();
+        headerMicBtn.classList.toggle("rzg-header-mic-speaking", active);
+        headerMicBtn.classList.toggle("rzg-header-mic-stopped", isSpeechPaused());
+        headerMicBtn.title = active ? "Stop speaking" : "Resume speaking";
+        headerMicBtn.setAttribute("aria-label", headerMicBtn.title);
+      };
       headerMicBtn.addEventListener("click", () => {
         if (isSpeechActive() && !isSpeechPaused()) {
           pauseActiveSpeech();
         } else if (isSpeechPaused()) {
           resumeActiveSpeech();
         }
+        syncHeaderMic(); // update immediately instead of waiting for the poll
       });
       // Reflects current engine state on the button - purely visual,
       // doesn't drive or alter playback itself.
-      setInterval(() => {
-        const active = isSpeechActive() && !isSpeechPaused();
-        headerMicBtn.classList.toggle("rzg-header-mic-speaking", active);
-        headerMicBtn.title = active ? "Stop speaking" : "Resume speaking";
-        headerMicBtn.setAttribute("aria-label", headerMicBtn.title);
-      }, 300);
+      setInterval(syncHeaderMic, 300);
     }
 
     // Used by the "Read" button - reads the current page/module aloud
