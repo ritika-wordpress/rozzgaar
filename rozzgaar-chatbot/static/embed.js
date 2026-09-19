@@ -45,7 +45,7 @@
   // CONFIG - only line you should need to touch when the tunnel changes.
   // ------------------------------------------------------------------
   const CONFIG = {
-    BACKEND_URL: "http://127.0.0.1:8000", // no trailing slash
+    BACKEND_URL: "https://api.rozzgaar.in/", // no trailing slash
     // How long a cached Summary / Sample Q&A / translated-Read response
     // stays valid before it's treated as stale and regenerated. Keyed by
     // a hash of the page's own content (see hashText()/contentHash()), so
@@ -163,10 +163,13 @@
   // image is also what's shown if the video never plays at all.
   function assistantIconVideo(size) {
     const videoUrl = `${CONFIG.BACKEND_URL}/static/rozzgaar_bot.mp4`;
-    const posterUrl = `data:image/png;base64,${ROZZGAAR_ICON_B64}`;
-    return `<video width="${size}" height="${size}" autoplay muted loop playsinline
-              poster="${posterUrl}" aria-label="Saarthi"
-              style="display:block; object-fit:cover; border-radius:50%; pointer-events:none;">
+    // No poster image on purpose: the launcher shows the bot video and
+    // nothing else. The video stays invisible until its first frame has
+    // loaded (see where the launcher is built), so the static icon never
+    // flashes up at startup.
+    return `<video width="${size}" height="${size}" autoplay muted loop playsinline preload="auto"
+              aria-label="Saarthi"
+              style="display:block; object-fit:cover; border-radius:50%; pointer-events:none; opacity:0; transition:opacity .25s ease;">
               <source src="${videoUrl}" type="video/mp4">
             </video>`;
   }
@@ -990,6 +993,36 @@
   // that everywhere at once, including the launcher hover.
   const LANG_TO_BCP47 = { hi: "hi-IN", en: "en-IN" };
 
+  // Browsers (Chrome especially) load their voice list asynchronously, so
+  // right after page load getVoices() is empty and the first thing spoken
+  // (e.g. Hindi) came out in the default English voice or not at all.
+  // Ask for the list immediately at startup and keep it refreshed.
+  if ("speechSynthesis" in window) {
+    try {
+      window.speechSynthesis.getVoices();
+      window.speechSynthesis.addEventListener("voiceschanged", () => {
+        try { window.speechSynthesis.getVoices(); } catch (e) { /* ignore */ }
+      });
+    } catch (e) { /* ignore */ }
+  }
+  let _voicesSettled = false;
+  // Runs cb once voices are available (or after a short wait, so speech is
+  // never blocked for long). Only ever waits on the very first utterance.
+  function whenVoicesReady(cb) {
+    let list = [];
+    try { list = window.speechSynthesis.getVoices() || []; } catch (e) { /* ignore */ }
+    if (list.length) { cb(); return; }
+    let done = false;
+    const go = () => {
+      if (done) return;
+      done = true;
+      window.speechSynthesis.removeEventListener("voiceschanged", go);
+      cb();
+    };
+    window.speechSynthesis.addEventListener("voiceschanged", go);
+    setTimeout(go, 800);
+  }
+
   function resolveSpeechLang(language) {
     if (!language || language === "auto") return null;
     return LANG_TO_BCP47[language] || language;
@@ -1266,6 +1299,11 @@
       if (done) done();
       return;
     }
+    if (!_voicesSettled) {
+      _voicesSettled = true;
+      whenVoicesReady(() => _playSpeechChunk(gen));
+      return;
+    }
     const full = _speechChunks[_speechIndex];
     const startOffset = _speechCharOffset;
     const text = startOffset > 0 ? full.slice(startOffset).trim() : full;
@@ -1419,6 +1457,55 @@
         () => el.classList.remove("rzg-speaking")
       );
     });
+  }
+
+  // ---- Saarthi's recorded voice (static/saarthi_vo_hi.mp3 / saarthi_vo_en.mp3) ----
+  // The mascot greeting is a pre-recorded clip in the visitor's language
+  // rather than the browser's synthetic voice, so it sounds the same on
+  // every device and needs no voice list to have loaded first. If the clip
+  // can't play (file missing, or the browser blocks audio before the
+  // visitor has clicked anywhere on the page) the caller falls back to the
+  // old browser voice.
+  const _introAudios = {};
+  function _introAudioFor(lang) {
+    const key = lang === "hi" ? "hi" : "en";
+    if (!_introAudios[key]) {
+      const a = new Audio(`${CONFIG.BACKEND_URL}/static/saarthi_vo_${key}.mp3`);
+      a.preload = "auto";
+      _introAudios[key] = a;
+    }
+    return _introAudios[key];
+  }
+  let _introPlaying = null;
+  function stopIntroVoice() {
+    if (_introPlaying) {
+      try { _introPlaying.pause(); _introPlaying.currentTime = 0; } catch (e) { /* ignore */ }
+      _introPlaying = null;
+    }
+  }
+  // Resolves true once the clip is actually playing, false if it couldn't.
+  function playIntroVoice(lang, onStart, onEnd) {
+    stopIntroVoice();
+    const audio = _introAudioFor(lang);
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      audio.removeEventListener("ended", finish);
+      audio.removeEventListener("pause", finish);
+      if (_introPlaying === audio) _introPlaying = null;
+      if (onEnd) onEnd();
+    };
+    audio.addEventListener("ended", finish);
+    audio.addEventListener("pause", finish);
+    try { audio.currentTime = 0; } catch (e) { /* not loaded yet */ }
+    _introPlaying = audio;
+    let p;
+    try { p = audio.play(); } catch (e) { p = Promise.reject(e); }
+    return Promise.resolve(p).then(
+      () => { if (onStart && !finished) onStart(); return true; },
+      () => { finished = true; audio.removeEventListener("ended", finish); audio.removeEventListener("pause", finish); if (_introPlaying === audio) _introPlaying = null; return false; }
+    );
   }
 
   function buildFallbackSummary(text, maxChars) {
@@ -1601,6 +1688,12 @@
       display:flex; align-items:center; justify-content:center; color:#fff;
       line-height:1; overflow:hidden;`;
     launcher.innerHTML = assistantIconVideo(60);
+    const botVideo = launcher.querySelector("video");
+    if (botVideo) {
+      const showBot = () => { botVideo.style.opacity = "1"; };
+      if (botVideo.readyState >= 2) showBot();
+      else botVideo.addEventListener("loadeddata", showBot, { once: true });
+    }
     document.body.appendChild(launcher);
 
     function getLauncherTipText() {
@@ -1650,21 +1743,28 @@
     launcher.addEventListener("focus", showLauncherTip);
     launcher.addEventListener("blur", hideLauncherTip);
 
+    let launcherHovered = false;
+    let introSpokenThisPage = false;
     launcher.addEventListener("mouseenter", () => {
       const lang = detectLauncherUiLang();
       const tipT = UI_TEXT[lang];
       renderLauncherTip(tipT);
       launcher.title = tipT.launcherTooltip;
       launcher.setAttribute("aria-label", tipT.launcherTooltip);
-      speakText(
-        tipT.launcherTooltip,
+      launcherHovered = true;
+      cancelSpeech();
+      playIntroVoice(
         lang,
-        () => launcher.classList.add("rzg-speaking"),
-        () => launcher.classList.remove("rzg-speaking"),
-        VOICE_STYLE_CUTE
+        () => { introSpokenThisPage = true; launcher.classList.add("rzg-speaking"); },
+        () => launcher.classList.remove("rzg-speaking")
       );
+      // Only the recorded voice is ever used here. If the browser blocks
+      // it (no click on the page yet) it stays silent and plays on the
+      // first click instead - no synthetic voice takes its place.
     });
     launcher.addEventListener("mouseleave", () => {
+      launcherHovered = false;
+      stopIntroVoice();
       cancelSpeech();
       launcher.classList.remove("rzg-speaking");
     });
@@ -1730,6 +1830,7 @@
     document.body.appendChild(wrap);
 
     function closeWidget() {
+      stopIntroVoice();
       cancelSpeech();
       wrap.classList.remove("rzg-open");
       launcher.style.display = "flex";
@@ -1741,6 +1842,12 @@
       hideLauncherTip();
       wrap.classList.add("rzg-open");
       launcher.style.display = "none";
+      // Browsers only allow sound after the visitor has clicked/tapped, so
+      // a visitor who never got the hover greeting hears it now, once.
+      if (!introSpokenThisPage) {
+        introSpokenThisPage = true;
+        playIntroVoice(detectLauncherUiLang());
+      }
     });
     wrap.querySelector("#rzg-minimizeBtn").addEventListener("click", closeWidget);
 
@@ -3087,7 +3194,21 @@
     }
 
     async function startRecording() {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      let stream;
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error("no-mic-api"); // e.g. page opened over plain http (not localhost)
+        }
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        addMessage(
+          sessionLanguage === "hi"
+            ? "माइक्रोफ़ोन चालू नहीं हो पाया - ब्राउज़र में माइक्रोफ़ोन की अनुमति दें (साइट https पर खुली होनी चाहिए)।"
+            : "Couldn't start the microphone - please allow microphone access in your browser (the site must be opened over https).",
+          "bot"
+        );
+        return;
+      }
       mediaRecorder = new MediaRecorder(stream);
       audioChunks = [];
       mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data);
