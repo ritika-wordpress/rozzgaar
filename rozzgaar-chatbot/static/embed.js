@@ -156,19 +156,63 @@
   // as embed.js itself (CONFIG.BACKEND_URL, which main.py already keeps
   // in sync with wherever this backend is actually reachable), so it
   // works in dev and prod without any hardcoded domain.
-  // `poster` reuses the existing static PNG so there's a correct-looking
-  // frame the instant the button appears, before the video has actually
-  // loaded/started playing - autoplay can be silently blocked by some
-  // browsers/embeds (e.g. very strict in-app webviews), so the poster
-  // image is also what's shown if the video never plays at all.
+  // No `poster` here on purpose: a poster would show the static PNG icon
+  // as a placeholder frame before the video has loaded/started playing,
+  // which is exactly the "icon flashes, then video" effect on page load
+  // that we don't want. Without it the element just stays empty/transparent
+  // until the video itself has a frame to show. The one tradeoff is that if
+  // autoplay is silently blocked (some strict in-app webviews), there's no
+  // fallback frame shown at all - accepted here since avoiding the icon
+  // flash takes priority.
   function assistantIconVideo(size) {
     const videoUrl = `${CONFIG.BACKEND_URL}/static/rozzgaar_bot.mp4`;
-    const posterUrl = `data:image/png;base64,${ROZZGAAR_ICON_B64}`;
     return `<video width="${size}" height="${size}" autoplay muted loop playsinline
-              poster="${posterUrl}" aria-label="Saarthi"
+              aria-label="Saarthi"
               style="display:block; object-fit:cover; border-radius:50%; pointer-events:none;">
               <source src="${videoUrl}" type="video/mp4">
             </video>`;
+  }
+
+  // Recorded voiceover greeting for the launcher hover, replacing the old
+  // browser-TTS "cute voice" (speechSynthesis reading the tooltip text
+  // aloud). These are real recorded lines, one per language, served as
+  // static assets the same way the launcher video is - fetched once per
+  // visitor and cached by the browser, not inlined as base64.
+  const LAUNCHER_VO_URLS = {
+    en: `${CONFIG.BACKEND_URL}/static/saarthi_vo_en.mp3`,
+    hi: `${CONFIG.BACKEND_URL}/static/saarthi_vo_hi.mp3`,
+  };
+  // Lazily-created and reused across hovers so a quick re-hover doesn't
+  // spin up a second <audio> element - just restarts the existing one.
+  let _launcherVoAudio = null;
+  let _launcherVoLang = null;
+
+  // `el` is the launcher button - passed in rather than closed over, since
+  // this is defined outside buildWidget() where `launcher` actually lives.
+  function playLauncherVoiceover(el, lang) {
+    const url = LAUNCHER_VO_URLS[lang] || LAUNCHER_VO_URLS.en;
+    if (!_launcherVoAudio || _launcherVoLang !== lang) {
+      if (_launcherVoAudio) _launcherVoAudio.pause();
+      _launcherVoAudio = new Audio(url);
+      _launcherVoLang = lang;
+      _launcherVoAudio.addEventListener("play", () => el.classList.add("rzg-speaking"));
+      _launcherVoAudio.addEventListener("pause", () => el.classList.remove("rzg-speaking"));
+      _launcherVoAudio.addEventListener("ended", () => el.classList.remove("rzg-speaking"));
+    } else {
+      _launcherVoAudio.currentTime = 0;
+    }
+    // Autoplay can be silently blocked (rare, but same caveat as the
+    // muted video above) - failing quietly here just means no sound,
+    // not a broken hover.
+    _launcherVoAudio.play().catch(() => {});
+  }
+
+  function stopLauncherVoiceover(el) {
+    if (_launcherVoAudio) {
+      _launcherVoAudio.pause();
+      _launcherVoAudio.currentTime = 0;
+    }
+    el.classList.remove("rzg-speaking");
   }
 
   function readIconSvg(size) {
@@ -656,7 +700,6 @@
       tipSummary: "पेज का सारांश सुनें",
       tipSample: "बहुविकल्पीय प्रश्न हल करें",
       tipVoice: "बात करें",
-      welcome: "मैं यहाँ आपकी मदद के लिए हूँ - इस पेज की सामग्री पढ़ने, उसका सारांश देने, या सवाल सुझाने में।",
       readLabel: "पढ़ें", readBusy: "...", readTitle: "इस पेज को सुनें",
       summaryLabel: "सारांश", summaryBusy: "...", summaryTitle: "इस पेज का सारांश सुनें",
       sampleLabel: "प्रश्न", sampleBusy: "...", sampleTitle: "इस पेज पर बहुविकल्पीय प्रश्न हल करें",
@@ -698,7 +741,6 @@
       tipSummary: "Summarize the page",
       tipSample: "Practise multiple-choice questions",
       tipVoice: "Talk to me",
-      welcome: "I am here to help you with the content - read it, summarize it, or suggest questions in your selected language.",
       readLabel: "Read", readBusy: "...", readTitle: "Listen to this page read aloud",
       summaryLabel: "Summary", summaryBusy: "...", summaryTitle: "Listen to a summary of this page",
       sampleLabel: "Quiz", sampleBusy: "...", sampleTitle: "Practise multiple-choice questions on this page",
@@ -1123,17 +1165,14 @@
   let _speechOnEnd = null;
   let _speechPaused = false;
 
-  // Default voice: whatever the browser's chosen voice sounds like
-  // normally. "Cute" voice: a gentler, higher-pitched, slightly slower
-  // character (plus a soft nudge toward a female-labelled voice where
-  // one's available) used for the launcher's hover tooltip so the
-  // mascot sounds sweet rather than robotic - kept separate from the
-  // neutral voice used for actually reading course content aloud
-  // (Read/Summary/Sample Q&A/chat), where a natural, easy-to-follow
-  // voice matters more than personality. SpeechSynthesisUtterance.pitch
+  // The launcher's hover used to have its own "cute" voice style (higher
+  // pitch, slightly slower, nudged toward a female-labelled voice) for the
+  // browser-TTS tooltip readout. That's gone now - the launcher hover plays
+  // a recorded voiceover instead (see playLauncherVoiceover above) - so
+  // only the neutral style used for actually reading course content aloud
+  // (Read/Summary/Sample Q&A/chat) remains. SpeechSynthesisUtterance.pitch
   // runs 0-2 (1 = normal) and .rate runs 0.1-10 (1 = normal).
   const VOICE_STYLE_DEFAULT = { pitch: 1, rate: 1, preferFemale: false };
-  const VOICE_STYLE_CUTE = { pitch: 1.45, rate: 0.95, preferFemale: true };
 
   function cancelSpeech() {
     stopSpeechKeepAlive();
@@ -1145,10 +1184,6 @@
     speechOwnerKey = null;
     speechOwnerLang = null;
     if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-  }
-
-  function speakText(text, language, onStart, onEnd, voiceStyle) {
-    speakQueue([text], language, onStart, onEnd, voiceStyle);
   }
 
   // ---- Speech ownership -------------------------------------------------
@@ -1571,17 +1606,10 @@
       renderLauncherTip(tipT);
       launcher.title = tipT.launcherTooltip;
       launcher.setAttribute("aria-label", tipT.launcherTooltip);
-      speakText(
-        tipT.launcherTooltip,
-        lang,
-        () => launcher.classList.add("rzg-speaking"),
-        () => launcher.classList.remove("rzg-speaking"),
-        VOICE_STYLE_CUTE
-      );
+      playLauncherVoiceover(launcher, lang);
     });
     launcher.addEventListener("mouseleave", () => {
-      cancelSpeech();
-      launcher.classList.remove("rzg-speaking");
+      stopLauncherVoiceover(launcher);
     });
 
     const wrap = document.createElement("div");
@@ -2070,7 +2098,6 @@
       log.style.display = "flex";
       form.style.display = "flex";
       applyLanguageToChrome();
-      addMessage(t("welcome"), "bot");
     }
 
     const langToggleBtn = wrap.querySelector("#rzg-langToggle");
