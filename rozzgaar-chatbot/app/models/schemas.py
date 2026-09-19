@@ -21,7 +21,14 @@ class ChatResponse(BaseModel):
     reply: str
     language: Literal["en", "hi"]
     sources: list[SourceRef] = Field(default_factory=list)
+    # Plain follow-up prompts the visitor can tap to ASK (each one gets
+    # sent back through /chat/ as their next message).
     suggested_questions: list[str] = Field(default_factory=list)
+    # Multiple-choice practice questions for the visitor to ANSWER, used
+    # by the "quiz me" / "give me questions" intent. Kept separate from
+    # suggested_questions because the two are tapped for opposite
+    # reasons and the widget renders them differently.
+    mcq_questions: list["QAItem"] = Field(default_factory=list)
 
 
 class SummarizeRequest(BaseModel):
@@ -79,7 +86,14 @@ class VideoSummarizeResponse(BaseModel):
 
 class QAItem(BaseModel):
     question: str
+    # `answer` is the explanation of why the correct option is right.
     answer: str
+    # Multiple-choice payload. Both fields stay optional so an item the
+    # model returned without usable options still round-trips as a plain
+    # question/answer pair (the widget renders either shape), and so any
+    # existing client reading only question/answer keeps working.
+    options: list[str] = []
+    correct_index: Optional[int] = None
 
 
 class SuggestQuestionsRequest(BaseModel):
@@ -142,3 +156,8 @@ class VoiceChatResponse(BaseModel):
     suggested_questions: list[str] = Field(default_factory=list)
     audio_base64: str | None = None
     audio_mime: str = "audio/mpeg"
+
+
+# QAItem is defined below ChatResponse, so its forward reference has to
+# be resolved once the whole module is loaded.
+ChatResponse.model_rebuild()

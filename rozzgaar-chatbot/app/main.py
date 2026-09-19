@@ -1,4 +1,5 @@
 import asyncio
+import re
 import logging
 import sys
 from pathlib import Path
@@ -65,21 +66,46 @@ app.add_middleware(
 
 # Serves embed.js with CONFIG.BACKEND_URL swapped for whatever
 # PUBLIC_BACKEND_URL is currently set to in .env - so updating the ngrok
-# URL only ever means editing .env and restarting, never hand-editing the
-# JS file. Registered BEFORE the /static mount below so it wins for this
-# one path; every other file in ./static (page-intent.js, test-widget.html)
-# still falls through to the plain static mount untouched.
+# URL (or pointing a local dev server at itself) only ever means editing
+# .env and restarting, never hand-editing the JS file. Registered BEFORE
+# the /static mount below so it wins for this one path; every other file
+# in ./static (page-intent.js, test-widget.html) still falls through to
+# the plain static mount untouched.
+#
+# This used to match one exact hardcoded placeholder string (an old
+# ngrok URL). That's fragile by construction: the moment anyone edits
+# embed.js's own BACKEND_URL default to something else (a new ngrok
+# tunnel, the current production domain, anything) for ANY reason, the
+# placeholder text no longer appears in the file, .replace() becomes a
+# silent no-op, and every visitor - local dev and production alike - gets
+# served whatever literal happened to be checked into embed.js instead
+# of what .env actually says. There's no error when this happens: the
+# file returns 200 with valid JS, it just quietly points at the wrong
+# backend, which surfaces downstream as "TypeError: Failed to fetch" on
+# every widget network call once whatever's hardcoded stops being
+# reachable from wherever the page is being viewed.
+#
+# Matching the STRUCTURE of the assignment instead of one specific value
+# fixes that for good: this replaces whatever URL is currently inside
+# BACKEND_URL: "...", regardless of what it is, so the swap keeps working
+# no matter how many times the checked-in default changes.
 _EMBED_JS_PATH = Path(__file__).resolve().parent.parent / "static" / "embed.js"
-_EMBED_JS_PLACEHOLDER = 'BACKEND_URL: "https://tropical-refocus-exact.ngrok-free.dev",'
+_EMBED_JS_BACKEND_URL_RE = re.compile(r'(BACKEND_URL:\s*")[^"]*(")')
 
 
 @app.get("/static/embed.js")
 def embed_js():
     content = _EMBED_JS_PATH.read_text(encoding="utf-8")
-    content = content.replace(
-        _EMBED_JS_PLACEHOLDER,
-        f'BACKEND_URL: "{settings.public_backend_url}",',
-    )
+    # Only swap when .env actually sets one - an empty/unset
+    # PUBLIC_BACKEND_URL leaves embed.js's own checked-in default alone,
+    # so a bare checkout with no .env configured yet still serves
+    # something usable instead of an empty BACKEND_URL: "".
+    if settings.public_backend_url:
+        content = _EMBED_JS_BACKEND_URL_RE.sub(
+            lambda m: f"{m.group(1)}{settings.public_backend_url}{m.group(2)}",
+            content,
+            count=1,
+        )
     return Response(content=content, media_type="application/javascript")
 
 

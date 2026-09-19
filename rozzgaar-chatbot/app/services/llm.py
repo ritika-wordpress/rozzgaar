@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import random
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -253,7 +254,7 @@ def _cached_answer_impl(question: str, context_chunks: tuple[str, ...], language
     lang_name = _LANG_NAME.get(language, "English")
     context = "\n\n---\n\n".join(context_chunks) if context_chunks else "No matching content was found."
     system = (
-        "You are the official assistant for Rozzgaar (rozzgaar.in), a skills training and "
+        "You are Saarthi, the official assistant for Rozzgaar (rozzgaar.in), a skills training and "
         "certification platform. Answer ONLY using the CONTEXT provided - never invent course "
         "names, prices, or policies.\n\n"
         "The CONTEXT is the course/page the user is currently browsing (plus closely related "
@@ -337,7 +338,7 @@ def _summarize_impl(text: str, length: str, language: str, title: str | None,
             "who it's for, what's covered (list every major topic/module), and the outcome/benefit."
         )
     system = (
-        "You are the Rozzgaar website assistant. Summarize the given page/course content "
+        "You are Saarthi, the Rozzgaar website assistant. Summarize the given page/course content "
         f"faithfully - do not invent facts, prices, or claims not present in the text. Do not be "
         f"overly brief - use the full word range you're given below. Reply in {lang_name} - this "
         "is the language the user chose for this session, regardless of what language the CONTENT "
@@ -392,6 +393,18 @@ _TRANSLATE_MAX_RETRIES = 3  # the free endpoint occasionally 429s/errors under c
 # same requests out over time instead of firing them all at once, which
 # noticeably cuts the error-page rate under real page-translate load.
 _TRANSLATE_MAX_WORKERS = 4
+
+# _TRANSLATE_MAX_WORKERS above only bounds concurrency WITHIN one
+# translate()/translate_batch() call's own ThreadPoolExecutor. It does
+# nothing about TWO such calls running at once - two browser tabs
+# translating a page, or a page re-triggering "translate this page"
+# before the first pass finished - each spinning up its own 4-worker
+# pool, for 8+ real concurrent hits on the same Google endpoint. This
+# semaphore is the actual global cap: every real network call in this
+# module, from any thread, any request, waits its turn here, so the
+# TOTAL in-flight count across the whole process never exceeds
+# _TRANSLATE_MAX_WORKERS regardless of how many callers are active.
+_TRANSLATE_INFLIGHT = threading.BoundedSemaphore(_TRANSLATE_MAX_WORKERS)
 
 
 def translate(text: str, language: str) -> str:
@@ -509,7 +522,12 @@ def _translate_chunk_impl(text: str, language: str) -> tuple[str, bool]:
     last_exc: Exception | None = None
     for attempt in range(_TRANSLATE_MAX_RETRIES + 1):
         try:
-            translated = GoogleTranslator(source="auto", target=target).translate(text)
+            # Every real HTTP hit to Google, from any thread/request in
+            # the process, funnels through this one semaphore - see
+            # _TRANSLATE_INFLIGHT above for why a per-pool cap alone
+            # isn't enough.
+            with _TRANSLATE_INFLIGHT:
+                translated = GoogleTranslator(source="auto", target=target).translate(text)
             if translated and _looks_like_translate_error_page(translated):
                 # Not a real translation - Google's backend served an error
                 # page and the library didn't raise for it. Treat exactly
@@ -517,7 +535,13 @@ def _translate_chunk_impl(text: str, language: str) -> tuple[str, bool]:
                 last_exc = RuntimeError("Google Translate returned an error-page response, not a translation")
                 if attempt < _TRANSLATE_MAX_RETRIES:
                     sleep_for = _backoff_with_jitter(delay)
-                    logger.warning("Google Translate returned an error page, retrying in %.1fs (attempt %d/%d).",
+                    # DEBUG, not WARNING: under real page-translate load this
+                    # fires per in-flight chunk per retry - dozens of lines
+                    # per page load - and a transient retry that goes on to
+                    # succeed isn't something an operator needs to see. The
+                    # WARNING further down only fires once retries are
+                    # actually exhausted, which is the case worth surfacing.
+                    logger.debug("Google Translate returned an error page, retrying in %.1fs (attempt %d/%d).",
                                     sleep_for, attempt + 1, _TRANSLATE_MAX_RETRIES)
                     time.sleep(sleep_for)
                     delay *= 2
@@ -528,7 +552,7 @@ def _translate_chunk_impl(text: str, language: str) -> tuple[str, bool]:
             last_exc = exc
             if attempt < _TRANSLATE_MAX_RETRIES:
                 sleep_for = _backoff_with_jitter(delay)
-                logger.warning("Google Translate rate limited, retrying in %.1fs (attempt %d/%d).",
+                logger.debug("Google Translate rate limited, retrying in %.1fs (attempt %d/%d).",
                                 sleep_for, attempt + 1, _TRANSLATE_MAX_RETRIES)
                 time.sleep(sleep_for)
                 delay *= 2
@@ -635,9 +659,24 @@ def translate_batch(texts: tuple[str, ...], language: str) -> list[str]:
 
         joined = _TRANSLATE_PACK_SEP.join(texts[i] for i in pack)
         translated_joined, ok = _translate_chunk_impl(joined, language)
-        parts = translated_joined.split(_TRANSLATE_PACK_SEP.strip("\n")) if ok else []
 
-        if ok and len(parts) == len(pack):
+        if not ok:
+            # The merged call itself already retried _TRANSLATE_MAX_RETRIES
+            # times and still failed (rate-limited/errored throughout) -
+            # this is Google's endpoint under load RIGHT NOW, not something
+            # specific to this pack. Fanning out to one call per item here
+            # (this used to happen unconditionally) turns one exhausted
+            # pack into up to _TRANSLATE_PACK_MAX_ITEMS more calls, each
+            # retrying into the SAME throttling - which is a request storm
+            # that makes the throttling worse, not a recovery from it. Fail
+            # the whole pack open instead: every item in it keeps its
+            # original untranslated text, same as a lone chunk would.
+            for i in pack:
+                results[i] = strip_decorative_symbols(texts[i])
+            return
+
+        parts = translated_joined.split(_TRANSLATE_PACK_SEP.strip("\n"))
+        if len(parts) == len(pack):
             # Clean split, right count - trust it, and cache each piece
             # under its OWN item key so future single-node lookups (and
             # future packs that happen to include this item alongside
@@ -649,11 +688,12 @@ def translate_batch(texts: tuple[str, ...], language: str) -> list[str]:
                     _stage_response_cache_write(keys[i], translated)
             return
 
-        # Merge didn't come back clean (Google dropped/reformatted the
-        # separator, or the request failed outright) - fall back to the
-        # old one-call-per-item path for just this pack rather than
-        # guessing which returned piece belongs to which DOM node.
-        # Correctness always wins over the speedup.
+        # The call itself succeeded, but Google dropped/reformatted the
+        # separator so the piece count doesn't match the item count - a
+        # content issue, not a load issue, so per-item retry is the right
+        # (and here, cheap - the pack succeeded, so these calls won't be
+        # fighting the same throttling) fallback: it's the only way to
+        # tell which returned piece belongs to which DOM node.
         for i in pack:
             results[i] = _translate_chunk(texts[i], language)
 
@@ -664,49 +704,233 @@ def translate_batch(texts: tuple[str, ...], language: str) -> list[str]:
 
 
 
+# Strips a leading option label the model may have added despite the
+# prompt: "A. ", "b) ", "(3) ", "1 - " and friends.
+_OPTION_PREFIX_RE = re.compile(r"^\s*\(?\s*(?:[A-Za-z]|\d{1,2})\s*[.):\-]\s+")
+
+
 def generate_suggested_questions(context_text: str, language: str, count: int = 5) -> list[dict]:
     """Disk-cached wrapper - see summarize() above for why. Same
     context_text + language + count only ever hits Groq once, persisted
     across restarts, and stays correct automatically if context_text
     changes (different key -> regenerated fresh)."""
-    key_parts = (context_text, language, count)
+    # "mcq-v1" is a cache-format version tag, NOT a prompt detail: entries
+    # written before questions became multiple-choice only hold
+    # question/answer and would come back option-less forever (the disk
+    # cache is keyed by content, and the course content itself hasn't
+    # changed). Bumping the tag gives the new format a fresh keyspace;
+    # the old entries just sit unused. Bump it again if the MCQ shape
+    # ever changes.
+    key_parts = ("mcq-v1", context_text, language, count)
     return _disk_cached("suggested_questions", key_parts,
                          lambda: _generate_suggested_questions_impl(context_text, language, count))
+
+
+# How many choices each generated question offers. Four is the usual MCQ
+# shape and still fits in the widget's 368px-wide panel.
+_MCQ_OPTION_COUNT = 4
 
 
 def _generate_suggested_questions_impl(context_text: str, language: str, count: int) -> list[dict]:
     lang_name = _LANG_NAME.get(language, "English")
     system = (
-        "You are the Rozzgaar website assistant. Based on the given content, propose sample "
-        "questions a prospective student might ask, with short accurate answers grounded only "
-        f"in the content. Reply in {lang_name} - this is the language the user chose for this "
+        "You are Saarthi, the Rozzgaar website assistant. Based on the given content, write "
+        "multiple-choice practice questions a learner could answer after reading it. "
+        f"Every question must have exactly {_MCQ_OPTION_COUNT} answer options, exactly one of "
+        "which is correct, and the correct one must be directly supported by the content. The "
+        "wrong options must be plausible but clearly wrong to someone who read the content - "
+        "never use filler like 'none of the above' or 'all of the above'. Vary which position "
+        "the correct option sits in across the questions. Also give a one-sentence explanation "
+        "of why the correct option is right, grounded only in the content. "
+        f"Write everything in {lang_name} - this is the language the user chose for this "
         "session, regardless of what language the CONTENT below is written in. Never switch "
-        "language to match the CONTENT's language. Do not use emoji or decorative symbols/icons "
-        "anywhere in the question or answer text - these are read aloud by text-to-speech. "
+        "language to match the CONTENT's language. Do not number or letter-prefix the options "
+        "(no 'A.', no '1)') and do not use emoji or decorative symbols/icons anywhere - this "
+        "text is read aloud by text-to-speech. "
+        # The JSON KEYS (question/options/correct_index/answer) are part of
+        # the wire format the widget parses - only their VALUES get
+        # translated. This is called out explicitly (not left implicit in
+        # "write everything in {lang_name}") because a non-English target
+        # is exactly where models are most likely to either translate the
+        # key names too, or quietly drop the options/correct_index keys
+        # altogether and fall back to a plain question+answer shape -
+        # which is otherwise a silent failure: the JSON still parses fine,
+        # it's just missing the fields the quiz needs, and nothing in a
+        # bare parse error would have caught it.
+        "The JSON KEY NAMES - question, options, correct_index, answer - must stay in "
+        "English exactly as shown below in every response, no matter what language you are "
+        "writing the CONTENT of those fields in. "
+        "EVERY item in the array must include all four keys - question, options, "
+        "correct_index, AND answer. An item with only question and answer, and no options, "
+        "is invalid and must never be produced, in any language. "
         "Respond with ONLY a JSON array, no markdown, no commentary, in this exact shape: "
-        '[{"question": "...", "answer": "..."}]'
+        '[{"question": "...", "options": ["...", "...", "...", "..."], '
+        '"correct_index": 0, "answer": "..."}] '
+        "where correct_index is the 0-based position of the correct option in options, and "
+        "answer is the explanation."
     )
-    user = f"CONTENT:\n{context_text}\n\nGenerate exactly {count} question/answer pairs."
-    raw = _complete(system, user, temperature=0.4, max_tokens=800)
-    qa = _safe_parse_qa(raw)
-    return [
-        {"question": strip_decorative_symbols(item["question"]), "answer": strip_decorative_symbols(item["answer"])}
-        for item in qa
-    ]
+    user = (
+        f"CONTENT:\n{context_text}\n\n"
+        f"Generate exactly {count} multiple-choice questions with {_MCQ_OPTION_COUNT} options each. "
+        f"Remember: every one of the {count} items needs its own options array and correct_index, "
+        f"written in {lang_name}, even though this instruction is in English."
+    )
+    # Roughly 2.5x the old token budget: each item now carries four
+    # options plus an explanation, and a truncated reply is unparseable
+    # JSON - i.e. zero questions, not slightly fewer.
+    raw = _complete(system, user, temperature=0.4, max_tokens=2000)
+    items = _safe_parse_qa(raw)
+
+    # Self-heal: the model sometimes complies with the schema in English
+    # but reverts to plain question+answer (no options) once it's also
+    # juggling a non-English target language - every item comes back
+    # individually well-formed, so this ISN'T a parse failure the normal
+    # per-item validation catches; it's every single item choosing to
+    # skip the fields we need. One retry with a blunter, single-purpose
+    # correction catches most of these without falling back to Groq for
+    # every request as a matter of course.
+    if items and language != "en" and all(not item["options"] for item in items):
+        logger.warning("Suggested questions for language=%s came back with no options on any "
+                        "item (%d items) - retrying once with a stricter reminder.", language, len(items))
+        retry_user = (
+            user + "\n\nYour previous attempt returned questions with NO options - just a "
+            "question and an answer, with the options and correct_index fields missing "
+            "entirely. That is not acceptable. This time, every single item MUST include a "
+            f"populated options array of exactly {_MCQ_OPTION_COUNT} strings and a correct_index "
+            "integer, written in the same target language as everything else."
+        )
+        retry_raw = _complete(system, retry_user, temperature=0.4, max_tokens=2000)
+        retry_items = _safe_parse_qa(retry_raw)
+        if retry_items and any(item["options"] for item in retry_items):
+            return retry_items
+    return items
 
 
 def _safe_parse_qa(raw: str) -> list[dict]:
+    """Parses the model's JSON into MCQ items.
+
+    Returns items shaped {question, options, correct_index, answer}. An
+    item whose options are unusable (missing, too few, duplicated, or a
+    correct_index pointing nowhere) degrades to a plain question/answer
+    pair - options [], correct_index None - rather than being dropped:
+    the widget renders both shapes, and a plainer question beats an
+    empty panel.
+    """
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`")
         cleaned = cleaned.replace("json\n", "", 1) if cleaned.startswith("json\n") else cleaned
     try:
         data = json.loads(cleaned)
-        if isinstance(data, list):
-            return [
-                {"question": item.get("question", "").strip(), "answer": item.get("answer", "").strip()}
-                for item in data if isinstance(item, dict)
-            ]
     except (json.JSONDecodeError, AttributeError) as exc:
         logger.warning("Failed to parse suggested-questions JSON: %s | raw=%s", exc, raw[:200])
-    return []
+        return []
+    if not isinstance(data, list):
+        return []
+
+    items: list[dict] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        question = strip_decorative_symbols(str(item.get("question", "")).strip())
+        answer = strip_decorative_symbols(str(item.get("answer", "")).strip())
+        if not question:
+            continue
+        options, correct_index = _clean_mcq_options(item)
+        if correct_index is None:
+            options = []
+        items.append({
+            "question": question,
+            "options": options,
+            "correct_index": correct_index,
+            "answer": answer,
+        })
+    return items
+
+
+def _clean_mcq_options(item: dict) -> tuple[list[str], int | None]:
+    """Normalises one item's options/correct_index, returning ([], None)
+    when they can't be trusted. Models sometimes letter-prefix options
+    despite being told not to ('A. Delhi'); those prefixes are stripped
+    here, since leaving them in would make the widget's own A/B/C/D
+    labels read as 'A. A. Delhi'."""
+    raw_options = item.get("options")
+    if not isinstance(raw_options, list):
+        return [], None
+
+    options = []
+    for opt in raw_options:
+        text = strip_decorative_symbols(str(opt).strip())
+        text = _OPTION_PREFIX_RE.sub("", text).strip()
+        if text:
+            options.append(text)
+
+    if len(options) < 2 or len(options) != len(raw_options):
+        return [], None
+    # Duplicate options make the question unanswerable (two identical
+    # "correct" choices), so treat the item as option-less instead.
+    if len({o.lower() for o in options}) != len(options):
+        return [], None
+
+    correct_index = _resolve_correct_index(item.get("correct_index"), options)
+    if correct_index is None:
+        return [], None
+    return options, correct_index
+
+
+# Matches a bare single-letter answer ("B", "b") - a model occasionally
+# answers with the OPTION'S LETTER (thinking of it as "A/B/C/D") rather
+# than its 0-based index or its full text.
+_SINGLE_LETTER_RE = re.compile(r"^[A-Za-z]$")
+
+
+def _resolve_correct_index(raw_correct_index, options: list[str]) -> int | None:
+    """Turns whatever the model put in correct_index into a valid 0-based
+    index into `options`, or None if it can't be trusted.
+
+    A plain JSON int is the happy path and the common case for English
+    output. In practice, correct_index arrives in a few other shapes -
+    disproportionately so for Hindi output, where the model's JSON
+    discipline is less reliable than in English even though the prompt
+    (and the schema) are identical - and each of those used to silently
+    degrade the whole question to option-less:
+      - the SAME index, but quoted as a JSON string ("2" instead of 2) -
+        including with Devanagari digits ("२"), which Python's int()
+        already understands natively;
+      - a bare option letter ("B");
+      - the full option TEXT instead of its position (the original
+        fallback this function replaces).
+    Each of those is exactly as unambiguous as a plain int once
+    recognised, so they're resolved here instead of being treated as a
+    parse failure.
+    """
+    if isinstance(raw_correct_index, bool):
+        return None  # bool is a subclass of int in Python - reject explicitly, True/False are never a valid index
+    if isinstance(raw_correct_index, int):
+        return raw_correct_index if 0 <= raw_correct_index < len(options) else None
+
+    text = strip_decorative_symbols(str(raw_correct_index or "").strip())
+    if not text:
+        return None
+
+    # Quoted numeral, in any script int() recognises (Western, Devanagari,
+    # etc.) - strip a trailing "." or ")" first ("2." / "(2)") in case the
+    # model formatted it like a list marker.
+    numeral = text.strip("()[]. 	")
+    try:
+        index = int(numeral)
+    except ValueError:
+        pass
+    else:
+        return index if 0 <= index < len(options) else None
+
+    # Bare option letter ("B" -> index 1).
+    letter = _OPTION_PREFIX_RE.sub("", text).strip() or text
+    if _SINGLE_LETTER_RE.match(letter):
+        index = ord(letter.upper()) - ord("A")
+        return index if 0 <= index < len(options) else None
+
+    # Full option text, the original fallback.
+    cleaned = _OPTION_PREFIX_RE.sub("", text).strip().lower()
+    matches = [i for i, o in enumerate(options) if o.lower() == cleaned]
+    return matches[0] if len(matches) == 1 else None

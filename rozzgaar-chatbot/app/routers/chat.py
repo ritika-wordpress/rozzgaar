@@ -3,7 +3,7 @@ from typing import NamedTuple
 from fastapi import APIRouter, Request
 
 from app.limiter import limiter
-from app.models.schemas import ChatRequest, ChatResponse, SourceRef
+from app.models.schemas import ChatRequest, ChatResponse, QAItem, SourceRef
 from app.routers.module_read import _find_module, _flatten_modules, _module_text
 from app.services import llm
 from app.services.content_fetcher import fetch_course_contents
@@ -202,13 +202,19 @@ def _handle_suggestions(slug: str | None, live: ResolvedContent | None, chunks, 
     else:
         context_text, sources = "\n".join(c.text for c in chunks), []
 
-    qa = llm.generate_suggested_questions(context_text, language, count=3)
-    questions = [item["question"] for item in qa if item.get("question")]
+    qa = llm.generate_suggested_questions(context_text, language, count=4)
+    mcqs = [QAItem(**item) for item in qa if item.get("question")]
 
-    reply = ("Here are some questions you could ask:"
+    # These are multiple-choice now, so they go out as mcq_questions (to
+    # answer) rather than suggested_questions (to ask) - see ChatResponse.
+    # Any item the model failed to give usable options for still arrives
+    # here with an empty options list, and the widget falls back to
+    # showing it as a plain question for that one item.
+    reply = ("Here are some questions to test yourself on this content:"
               if language == "en" else
-              "यहाँ कुछ सवाल हैं जो आप पूछ सकते हैं:")
-    return ChatResponse(reply=reply, language=language, sources=sources, suggested_questions=questions)
+              "इस सामग्री पर खुद को परखने के लिए यहाँ कुछ प्रश्न हैं:")
+    return ChatResponse(reply=reply, language=language, sources=sources,
+                        suggested_questions=[], mcq_questions=mcqs)
 
 
 def build_chat_response(
